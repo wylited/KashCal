@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.mockk.clearAllMocks
+import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,8 @@ import org.onekash.kashcal.sync.session.SyncSessionStore
 import org.onekash.kashcal.sync.strategy.ConflictResolver
 import org.onekash.kashcal.sync.strategy.PullStrategy
 import org.onekash.kashcal.sync.strategy.PushStrategy
+import org.onekash.kashcal.sync.strategy.TaskPushStrategy
+import org.onekash.kashcal.sync.strategy.TaskPushResult
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
@@ -166,9 +169,16 @@ class RealICloudSyncEngineTest {
         )
 
         // SyncNotificationManager needs the Android notification system, so it's mocked.
+        // The task push is stubbed empty: a VTODO-capable test calendar would otherwise run
+        // the real push under this test's account.
+        val taskPushStrategy = mockk<TaskPushStrategy>()
+        coEvery { taskPushStrategy.pushForCalendar(any(), any()) } returns
+            TaskPushResult(0, 0, 0, 0, emptySet(), emptyList())
+
         syncEngine = CalDavSyncEngine(
             pullStrategy = pullStrategy,
             pushStrategy = pushStrategy,
+            taskPushStrategy = taskPushStrategy,
             conflictResolver = conflictResolver,
             calendarRepository = calendarRepository,
             eventsDao = eventsDao,

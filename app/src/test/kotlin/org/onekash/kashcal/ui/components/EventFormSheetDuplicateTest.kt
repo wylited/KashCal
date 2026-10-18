@@ -14,10 +14,12 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.foundation.layout.fillMaxSize
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -36,6 +38,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.TimeZone
 
 /**
  * Renders [EventFormContent] with a `duplicateFrom` source and checks what the duplicate
@@ -57,6 +60,21 @@ class EventFormSheetDuplicateTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    private val savedZone = TimeZone.getDefault()
+
+    // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
+    // Europe/London matches the phone zone the time assertions assume; the per-test
+    // withDeviceTimeZone overrides keep precedence.
+    @Before
+    fun pinJvmZone() {
+        TimeZone.setDefault(TimeZone.getTimeZone("Europe/London"))
+    }
+
+    @After
+    fun restoreZone() {
+        TimeZone.setDefault(savedZone)
+    }
 
     private val calendars = listOf(
         Calendar(

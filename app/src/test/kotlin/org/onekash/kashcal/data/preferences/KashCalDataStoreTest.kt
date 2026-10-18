@@ -511,11 +511,13 @@ class KashCalDataStoreTest {
      * through setDefaultCalendarView, so adding a ViewMode without updating `VALID_VIEWS` fails
      * here.
      *
-     * INSIGHTS is excluded: HomeViewModel.setViewMode() never persists it.
+     * INSIGHTS and CONTACTS are excluded: HomeViewModel.setViewMode() never persists them.
      */
     @Test
     fun `every persistable ViewMode key round-trips through setDefaultCalendarView`() = runTest {
-        val persistableModes = ViewMode.entries.filter { it != ViewMode.INSIGHTS }
+        val persistableModes = ViewMode.entries.filter {
+            it != ViewMode.INSIGHTS && it != ViewMode.CONTACTS
+        }
 
         for (mode in persistableModes) {
             dataStore.setDefaultCalendarView(mode.key)

@@ -35,11 +35,13 @@ import org.onekash.kashcal.sync.strategy.PullResult
 import org.onekash.kashcal.sync.strategy.PullStrategy
 import org.onekash.kashcal.sync.strategy.PushResult
 import org.onekash.kashcal.sync.strategy.PushStrategy
+import org.onekash.kashcal.sync.strategy.TaskPushStrategy
 
 class CalDavSyncEngineTest {
 
     private lateinit var pullStrategy: PullStrategy
     private lateinit var pushStrategy: PushStrategy
+    private lateinit var taskPushStrategy: TaskPushStrategy
     private lateinit var conflictResolver: ConflictResolver
     private lateinit var calendarRepository: CalendarRepository
     private lateinit var eventsDao: EventsDao
@@ -87,6 +89,7 @@ class CalDavSyncEngineTest {
     fun setup() {
         pullStrategy = mockk()
         pushStrategy = mockk()
+        taskPushStrategy = mockk()
         conflictResolver = mockk()
         calendarRepository = mockk()
         eventsDao = mockk()
@@ -99,6 +102,7 @@ class CalDavSyncEngineTest {
         syncEngine = CalDavSyncEngine(
             pullStrategy = pullStrategy,
             pushStrategy = pushStrategy,
+            taskPushStrategy = taskPushStrategy,
             conflictResolver = conflictResolver,
             calendarRepository = calendarRepository,
             eventsDao = eventsDao,

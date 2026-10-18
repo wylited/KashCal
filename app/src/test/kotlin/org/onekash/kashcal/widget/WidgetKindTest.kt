@@ -18,6 +18,7 @@ class WidgetKindTest {
             WidgetKind.AGENDA to AgendaWidget::class.java,
             WidgetKind.WEEK to WeekWidget::class.java,
             WidgetKind.UPCOMING to UpcomingWidget::class.java,
+            WidgetKind.TASKS to TasksWidget::class.java,
         )
         // Fails if a new enum value is added without extending this map.
         assertEquals(expected.keys, WidgetKind.entries.toSet())

@@ -68,7 +68,15 @@ data class PendingTaskOperation(
 
     /** Calendar a MOVE takes the task to. */
     @ColumnInfo(name = "target_calendar_id")
-    val targetCalendarId: Long? = null
+    val targetCalendarId: Long? = null,
+
+    /**
+     * The calendar the task left, captured at queue time while `Task.calendarId` still names
+     * the source. The source calendar's push drains the operation from here, so a MOVE whose
+     * target never syncs (the local account, say) still deletes the source resource.
+     */
+    @ColumnInfo(name = "source_calendar_id")
+    val sourceCalendarId: Long? = null
 ) {
     companion object {
         const val OPERATION_CREATE = "CREATE"

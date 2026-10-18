@@ -1,3 +1,32 @@
+## [Unreleased]
+
+A calendar tells you what is happening. This release teaches it to tell you what still needs doing.
+
+KashCal now speaks VTODO. The task lists on your server — iCloud's Reminders, a `/tasks/` collection on your own CalDAV box — sync both ways: tick a task here and the server hears about it, add one over there and it lands on your phone, and when you're offline your edits wait in a queue and go the moment you're back. The new Tasks view lines them up the way you worry about them, overdue first, and they surface wherever a deadline belongs: under each day in the Agenda, in Week and Day, as a badge on busy months, in the Planner's boxes, in search, and in a widget of their own for the home screen.
+
+Your address book gets a window, too. The contacts your CardDAV accounts already sync can now be browsed in the app — searched, opened, called, edited — with each coming birthday worn as a chip, and a birthday event now opens the person it belongs to.
+
+And the views themselves stopped being a fixed menu. Settings has a new Views page: drag the calendar views into your own order, hide the ones you never open, and tune each one — no weekends, week numbers, completed tasks in the Agenda, badges in the month.
+
+### Everything in this release
+
+- Added two-way sync for task lists (VTODO): iCloud Reminders and generic `/tasks/` collections on CalDAV servers now sync their to-dos both ways, with an offline push queue that retries and lets the server's copy win when both sides changed
+- Added the Tasks view, grouping your tasks under Overdue, Today, Tomorrow, This week, Later, No date and Completed, with status and priority filters and create, edit, complete, delete and move
+- Added open tasks to the Agenda under the day they're due, overdue ones in today's group, with a setting to show completed ones too
+- Added tasks due that day to Week and Day views
+- Added a small badge on Month days that have tasks due, with a setting to turn it off
+- Added open tasks due that day to the Planner's day boxes, counted into the `+N` overflow
+- Added task results to search, under the event matches
+- Added a Tasks home-screen widget listing your next open tasks, overdue first, then by due date and priority
+- Added open tasks to the Agenda and Upcoming widgets on the day each is due
+- Added a Contacts view that browses the contacts your CardDAV accounts sync, with search and a chip for each upcoming birthday
+- Added contact detail: call, email or map an address, and edit or delete the contact in place
+- Added `View contact` on birthday and anniversary events, opening the person they belong to
+- Added a `Views` page to Settings under Appearance: drag the calendar views into your own order and untick the ones you don't use
+- Added per-view options: hide weekends in Week and Planner, week numbers in Month and Agenda, completed tasks in the Agenda, and task badges in the Month
+- Changed calendar visibility in the drawer into a split: each calendar can now be shown or hidden in the schedule and in Agenda and Tasks separately
+- Changed the local database to version 27, with new storage for tasks, their sync queue and per-calendar agenda visibility
+
 ## [2026.10.16]
 
 Calendars have a habit of telling you that something called "Quarterly plann…" is happening at some point on Thursday. This release is about reading the whole name.

@@ -18,10 +18,12 @@ import dagger.hilt.components.SingletonComponent
 import org.onekash.kashcal.data.preferences.KashCalDataStore
 
 /**
- * Today's Agenda widget: the date header over today's events, with time and calendar color.
+ * Today's Agenda widget: the date header over today's events and open tasks due today (or
+ * overdue), with time and calendar color; tasks carry a checkbox instead of a color pill.
  *
  * Past events render dimmed with a strikethrough. Tapping an event opens its quick view; tapping
- * the empty state creates an event.
+ * a task or the empty state opens the app (tasks have no widget deep link yet; the empty state
+ * creates an event).
  *
  * Refreshes on each [WidgetUpdateManager.updateAllWidgets] call (for example an event write, a
  * sync, midnight or a settings change) and every 30 minutes. [WIDGET_REFRESH_STAMP] lives in
@@ -61,6 +63,7 @@ class AgendaWidget : GlanceAppWidget() {
             val data by produceState(
                 initialValue = AgendaData(
                     events = emptyList(),
+                    tasks = emptyList(),
                     showEventEmojis = true,
                     maxEventsPerDay = 5,
                     timePattern = "h:mm a",
@@ -82,7 +85,8 @@ class AgendaWidget : GlanceAppWidget() {
                     timePattern = data.timePattern,
                     maxEventsPerDay = data.maxEventsPerDay,
                     isRefreshing = isRefreshing,
-                    detailedRows = data.detailedRows
+                    detailedRows = data.detailedRows,
+                    tasks = data.tasks
                 )
             }
         }

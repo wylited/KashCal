@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Cake
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -235,6 +236,7 @@ fun AccountSettingsScreen(
     onNavigateToSubscriptions: () -> Unit = {},
     onNavigateToBirthdaysAnniversaries: () -> Unit = {},
     onNavigateToDeviceCalendars: () -> Unit = {},
+    onNavigateToViews: () -> Unit = {},
     // Contact event counts (for B&A row subtitle)
     birthdayCount: Int = 0,
     anniversaryCount: Int = 0,
@@ -519,6 +521,17 @@ fun AccountSettingsScreen(
                     ) {
                         // Tap-to-open picker rows first, then the inline toggles (a group's
                         // switches read cleanest clustered at the end).
+                        row(label = stringResource(R.string.settings_views_title), subtitle = stringResource(R.string.settings_views_subtitle), id = "views") {
+                            SettingsRow(
+                                icon = Icons.Default.Apps,
+                                label = stringResource(R.string.settings_views_title),
+                                subtitle = stringResource(R.string.settings_views_subtitle),
+                                onClick = onNavigateToViews,
+                                showDivider = false,
+                                searchQuery = searchQuery
+                            )
+                        }
+
                         val timeFormatSubtitle = when (timeFormat) {
                             KashCalDataStore.TIME_FORMAT_12H -> stringResource(R.string.option_12_hour)
                             KashCalDataStore.TIME_FORMAT_24H -> stringResource(R.string.option_24_hour)

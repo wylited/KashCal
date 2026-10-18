@@ -49,6 +49,12 @@ object ExportablePreferences {
         PreferencesKeys.SHOW_EVENT_EMOJIS.name to PrefKind.BOOL,
         PreferencesKeys.TIME_FORMAT.name to PrefKind.STRING,
         PreferencesKeys.DEFAULT_CALENDAR_VIEW.name to PrefKind.STRING,
+        PreferencesKeys.VIEW_ORDER.name to PrefKind.STRING,
+        PreferencesKeys.VIEW_HIDDEN.name to PrefKind.STRING_SET,
+        PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS.name to PrefKind.BOOL,
+        PreferencesKeys.VIEW_OPT_WEEK_NUMBERS.name to PrefKind.BOOL,
+        PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS.name to PrefKind.BOOL,
+        PreferencesKeys.VIEW_OPT_MONTH_TASK_BADGE.name to PrefKind.BOOL,
         PreferencesKeys.WIDGET_MAX_EVENTS_PER_DAY.name to PrefKind.INT,
         PreferencesKeys.WIDGET_DETAILED_ROWS.name to PrefKind.BOOL,
         PreferencesKeys.CONTACT_BIRTHDAYS_ENABLED.name to PrefKind.BOOL,
@@ -105,6 +111,13 @@ object ExportablePreferences {
         PreferencesKeys.SHOW_EVENT_EMOJIS,
         PreferencesKeys.TIME_FORMAT,
         PreferencesKeys.DEFAULT_CALENDAR_VIEW,
+        // Customizable views: the pickers' order and hidden set, plus the per-view options
+        PreferencesKeys.VIEW_ORDER,
+        PreferencesKeys.VIEW_HIDDEN,
+        PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS,
+        PreferencesKeys.VIEW_OPT_WEEK_NUMBERS,
+        PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS,
+        PreferencesKeys.VIEW_OPT_MONTH_TASK_BADGE,
         PreferencesKeys.WIDGET_MAX_EVENTS_PER_DAY,
         PreferencesKeys.WIDGET_DETAILED_ROWS,
         // Contact birthdays & anniversaries
@@ -125,8 +138,8 @@ object ExportablePreferences {
     ).also {
         // Bump this and the matching ExportablePreferencesTest assertion together
         // whenever a key is added to or removed from KEYS above.
-        require(it.size == 43) {
-            "KEYS size drifted; expected 43 allowed keys but got ${it.size}. Update ExportablePreferencesTest expectations too."
+        require(it.size == 49) {
+            "KEYS size drifted; expected 49 allowed keys but got ${it.size}. Update ExportablePreferencesTest expectations too."
         }
     }
 

@@ -18,10 +18,10 @@ import org.onekash.kashcal.data.preferences.KashCalDataStore
 import java.io.IOException
 
 /**
- * Tests the data-fetch step of the Upcoming, Agenda, Week and Month widgets
- * ([fetchUpcomingState], [fetchAgendaData], [fetchWeekData], [fetchMonthEvents]) without a Glance
- * or Compose harness: the success shape, the detailed-rows preference, and the Error or empty
- * result when the repository or DataStore throws.
+ * Tests the data-fetch step of the Upcoming, Agenda, Week, Month and Tasks widgets
+ * ([fetchUpcomingState], [fetchAgendaData], [fetchWeekData], [fetchMonthEvents],
+ * [fetchTasksData]) without a Glance or Compose harness: the success shape, the detailed-rows
+ * preference, and the Error or empty result when the repository or DataStore throws.
  */
 class WidgetStateFetchersTest {
 
@@ -206,5 +206,59 @@ class WidgetStateFetchersTest {
         val result = fetchMonthEvents(repository, 20260401, 20260430)
 
         assertTrue(result.isEmpty())
+    }
+
+    // ========== fetchTasksData and the Upcoming tasks section ==========
+
+    @Test
+    fun `fetchUpcomingState threads the open tasks`() = runTest {
+        coEvery { repository.getEventsInRange(any(), any()) } returns emptyMap()
+        val tasks = listOf(
+            WidgetDataRepository.WidgetTask(
+                taskId = 1, title = "Overdue", whenTs = 1000L, isAllDay = false,
+                dayCode = 20260427, priority = 0
+            )
+        )
+        coEvery { repository.getOpenTasks(any()) } returns tasks
+
+        val state = fetchUpcomingState(repository, dataStore, context, horizonDays = 10)
+
+        assertEquals(tasks, (state as UpcomingState.Loaded).openTasks)
+    }
+
+    @Test
+    fun `fetchTasksData returns tasks with the resolved time pattern`() = runTest {
+        val task = WidgetDataRepository.WidgetTask(
+            taskId = 1, title = "Due today", whenTs = 1000L, isAllDay = false,
+            dayCode = 20260428, priority = 0
+        )
+        coEvery { repository.getOpenTasks(TASKS_WIDGET_MAX_TASKS) } returns listOf(task)
+
+        val data = fetchTasksData(repository, dataStore, context)
+
+        assertEquals(listOf(task), data.tasks)
+        assertEquals("h:mm a", data.timePattern)
+        assertEquals(false, data.detailedRows)
+    }
+
+    @Test
+    fun `fetchTasksData threads the detailed-rows preference`() = runTest {
+        coEvery { repository.getOpenTasks(any()) } returns emptyList()
+        every { dataStore.widgetDetailedRows } returns flowOf(true)
+
+        val data = fetchTasksData(repository, dataStore, context)
+
+        assertEquals(true, data.detailedRows)
+    }
+
+    @Test
+    fun `fetchTasksData returns empty shape when repository throws`() = runTest {
+        coEvery { repository.getOpenTasks(any()) } throws IOException("network")
+
+        val data = fetchTasksData(repository, dataStore, context)
+
+        // The failure path returns no tasks and default settings, so the widget renders "no
+        // open tasks"; only the empty list is asserted.
+        assertTrue(data.tasks.isEmpty())
     }
 }

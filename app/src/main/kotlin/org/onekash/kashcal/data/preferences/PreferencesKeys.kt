@@ -159,6 +159,33 @@ object PreferencesKeys {
     /** Default calendar view: one of the `VIEW_` values in [KashCalDataStore]. */
     val DEFAULT_CALENDAR_VIEW = stringPreferencesKey("default_calendar_view")
 
+    /**
+     * Comma-joined `VIEW_` keys giving the view pickers' order. The stored list always covers
+     * every valid key: [KashCalDataStore.parseViewOrder] appends any key a hand-edit or an
+     * older version left out, so the order can't drop a view. [KashCalDataStore.setVisibleViews]
+     * stores the hidden keys after the visible ones, so a re-shown view returns at the end of
+     * the list rather than a remembered slot.
+     */
+    val VIEW_ORDER = stringPreferencesKey("view_order")
+
+    /**
+     * The `VIEW_` keys hidden from the view picker and drawer. Hiding is exactly "not mentioned
+     * in [VIEW_ORDER]"; this set is [KashCalDataStore]'s denormalized read of that rule.
+     */
+    val VIEW_HIDDEN = stringSetPreferencesKey("view_hidden")
+
+    /** Per-view option: the Week and Planner grids drop Saturday and Sunday (default false). */
+    val VIEW_OPT_HIDE_WEEKENDS = booleanPreferencesKey("view_opt_hide_weekends")
+
+    /** Per-view option: a week-number column or caption on the Month and Agenda views. */
+    val VIEW_OPT_WEEK_NUMBERS = booleanPreferencesKey("view_opt_week_numbers")
+
+    /** Per-view option: the Agenda view also lists completed tasks (default false). */
+    val VIEW_OPT_AGENDA_COMPLETED_TASKS = booleanPreferencesKey("view_opt_agenda_completed_tasks")
+
+    /** Per-view option: the Month grids badge days with due tasks (default true). */
+    val VIEW_OPT_MONTH_TASK_BADGE = booleanPreferencesKey("view_opt_month_task_badge")
+
     /** Maximum events shown per day in the Agenda and Week widgets. */
     val WIDGET_MAX_EVENTS_PER_DAY = intPreferencesKey("widget_max_events_per_day")
 

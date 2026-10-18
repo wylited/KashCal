@@ -48,6 +48,7 @@ import kotlinx.coroutines.withContext
 import org.onekash.kashcal.domain.reader.DeviceEventReader
 import org.onekash.kashcal.domain.share.singleOccurrenceForShare
 import org.onekash.kashcal.data.db.entity.Event
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.data.ics.IcsImportFile
 import org.onekash.kashcal.data.ics.IcsParserService
 import org.onekash.kashcal.data.preferences.DefaultCalendar
@@ -63,9 +64,12 @@ import org.onekash.kashcal.reminder.notification.ReminderNotificationManager
 import org.onekash.kashcal.sync.notification.ChangeNotifier
 import org.onekash.kashcal.ui.components.AppInfoSheet
 import org.onekash.kashcal.ui.components.category.LocalTagColors
+import org.onekash.kashcal.ui.components.ContactDetailSheet
 import org.onekash.kashcal.ui.components.DeviceEventQuickViewSheet
 import org.onekash.kashcal.ui.components.EventFormSheet
 import org.onekash.kashcal.ui.components.EventQuickViewSheet
+import org.onekash.kashcal.ui.components.TaskFormSheet
+import org.onekash.kashcal.ui.components.TaskQuickViewSheet
 import org.onekash.kashcal.ui.components.IcsImportSheet
 import org.onekash.kashcal.ui.components.importSummary
 import org.onekash.kashcal.ui.components.NotificationPermissionDialog
@@ -84,6 +88,7 @@ import org.onekash.kashcal.ui.lock.decideDisableAction
 import org.onekash.kashcal.ui.lock.decideEnrollmentAction
 import org.onekash.kashcal.ui.model.localizedDisplayName
 import org.onekash.kashcal.ui.screens.HomeScreen
+import org.onekash.kashcal.ui.screens.contacts.ContactsScreen
 import org.onekash.kashcal.ui.theme.ColorSource
 import org.onekash.kashcal.ui.theme.KashCalTheme
 import org.onekash.kashcal.ui.theme.ThemeMode
@@ -93,6 +98,7 @@ import org.onekash.kashcal.ui.viewmodels.HomeViewModel
 import org.onekash.kashcal.ui.viewmodels.PendingAction
 import org.onekash.kashcal.ui.viewmodels.QuickAddViewModel
 import org.onekash.kashcal.ui.viewmodels.ShareAvailabilityViewModel
+import org.onekash.kashcal.ui.viewmodels.ViewMode
 import org.onekash.kashcal.util.CalendarContractAction
 import org.onekash.kashcal.util.CalendarIntentData
 import org.onekash.kashcal.util.CalendarIntentParser
@@ -268,6 +274,12 @@ class MainActivity : FragmentActivity() {
                 var quickViewEvent by remember { mutableStateOf<Event?>(null) }
                 var quickViewOccurrenceTs by remember { mutableStateOf<Long?>(null) }
 
+                // Contact detail sheet state, opened from a birthday/anniversary event's
+                // "View contact" action in the quick view. It shares the activity-scoped
+                // ContactsViewModel with the Contacts screen, so the boring option is one
+                // sheet instance here whose detail the view model loads.
+                var quickViewContactLookupKey by remember { mutableStateOf<String?>(null) }
+
                 // Share-as-card sheet state
                 var showShareCardSheet by remember { mutableStateOf(false) }
                 var shareCardEvent by remember { mutableStateOf<Event?>(null) }
@@ -283,6 +295,7 @@ class MainActivity : FragmentActivity() {
                 val formIsReadOnly by homeViewModel.formIsReadOnly.collectAsStateWithLifecycle()
                 val contactsDeclined by homeViewModel.contactSuggestionsDeclined.collectAsStateWithLifecycle()
                 val dayAttendeesMap by homeViewModel.dayAttendees.collectAsStateWithLifecycle()
+                val tasks by homeViewModel.tasks.collectAsStateWithLifecycle()
                 val pendingInvitesCount by homeViewModel.pendingInvitationsCount.collectAsStateWithLifecycle()
                 val pendingInvitations by homeViewModel.pendingInvitations.collectAsStateWithLifecycle()
                 // Drive HomeViewModel's attendee StateFlow from the active QuickView event.
@@ -539,6 +552,16 @@ class MainActivity : FragmentActivity() {
                 // through the occurrence stream.
                 CompositionLocalProvider(LocalTagColors provides uiState.tagColors) {
 
+                if (uiState.viewMode == ViewMode.CONTACTS) {
+                    // The Contacts browser replaces the home content entirely: the view-mode
+                    // dispatch lives inside HomeScreen, and this seam keeps the swap inside
+                    // MainActivity. Back returns to the view the user came from, through the
+                    // same setViewMode call the view picker uses.
+                    ContactsScreen(
+                        onBack = { homeViewModel.setViewMode(uiState.previousNonInsightsMode) }
+                    )
+                } else {
+
                 HomeScreen(
                     uiState = uiState,
                     weekEvents = weekEvents,
@@ -742,6 +765,11 @@ class MainActivity : FragmentActivity() {
                     onEnsureDotsForYear = { year -> homeViewModel.ensureDotsForYear(year) },
                     dayAttendees = dayAttendeesMap,
                     onSetVisibleEventIds = { ids -> homeViewModel.setVisibleEventIds(ids) },
+                    // Tasks view
+                    tasks = tasks,
+                    onToggleTaskDone = { task -> homeViewModel.toggleTaskDone(task) },
+                    onTaskClick = { task -> homeViewModel.showTaskQuickView(task.id) },
+                    onNewTask = { homeViewModel.showTaskForm() },
                     pendingInvitesCount = pendingInvitesCount,
                     pendingInvitations = pendingInvitations,
                     onOpenInvitationInbox = { homeViewModel.openInvitationInbox() },
@@ -749,6 +777,8 @@ class MainActivity : FragmentActivity() {
                     onDismissInvitationInbox = { homeViewModel.dismissInvitationInbox() },
                     onRsvpFromInbox = { eventId, status -> homeViewModel.replyRsvp(eventId, status) }
                 )
+
+                } // end view-mode content switch (Contacts vs home)
 
                 // Event Quick View Sheet
                 if (showQuickViewSheet && quickViewEvent != null) {
@@ -956,12 +986,114 @@ class MainActivity : FragmentActivity() {
                             // out of the share and return to it.
                             openShareCard(event)
                         },
+                        onViewContact = { lookupKey ->
+                            // A birthday/anniversary event jumps to its contact: close the
+                            // quick view and open the contact detail sheet instead. No view
+                            // change; the sheet shares the activity-scoped ContactsViewModel
+                            // with the Contacts screen.
+                            showQuickViewSheet = false
+                            quickViewEvent = null
+                            quickViewOccurrenceTs = null
+                            quickViewContactLookupKey = lookupKey
+                        },
                         showShareCardTooltip = !shownShareCardTooltip,
                         onShareCardTooltipDismissed = {
                             homeViewModel.markShareCardTooltipShown()
                         },
                         timeFormat = uiState.timeFormat
                     )
+                }
+
+                // Contact detail sheet, opened from a birthday/anniversary event's "View
+                // contact" action above. Hosted here (not from HomeScreen, whose dispatch this
+                // file doesn't own) with its own lookup-key state; the ContactsViewModel is
+                // activity-scoped, so it is the same instance the Contacts screen uses.
+                quickViewContactLookupKey?.let { contactLookupKey ->
+                    val contactsViewModel: org.onekash.kashcal.ui.screens.contacts.ContactsViewModel =
+                        hiltViewModel()
+                    LaunchedEffect(contactLookupKey) {
+                        contactsViewModel.openContact(contactLookupKey)
+                    }
+                    val contactDetail by contactsViewModel.selectedDetail.collectAsStateWithLifecycle()
+                    val contactDetailLoading by contactsViewModel.isLoadingDetail.collectAsStateWithLifecycle()
+                    val contactDeleteArmed by contactsViewModel.isDeleteConfirmArmed.collectAsStateWithLifecycle()
+                    ContactDetailSheet(
+                        detail = contactDetail,
+                        isLoading = contactDetailLoading,
+                        isDeleteConfirmArmed = contactDeleteArmed,
+                        onDismiss = {
+                            quickViewContactLookupKey = null
+                            contactsViewModel.closeContact()
+                        },
+                        onArmDeleteConfirm = contactsViewModel::armDeleteConfirm,
+                        onDisarmDeleteConfirm = contactsViewModel::disarmDeleteConfirm,
+                        onDelete = {
+                            contactsViewModel.deleteSelectedContact()
+                            quickViewContactLookupKey = null
+                        },
+                        onSaveEventDate = { isBirthday, date ->
+                            contactsViewModel.saveEventDate(isBirthday, date)
+                        },
+                        onSaveEdits = { name, organization, jobTitle, phone, email, note ->
+                            contactsViewModel.saveContactEdits(
+                                name, organization, jobTitle, phone, email, note
+                            )
+                        },
+                    )
+                }
+
+                // Task quick view sheet, the task twin of the event one above: the id lives in
+                // HomeUiState, the body in the ViewModel's live projection, so the sheet closes
+                // itself when the task is deleted and re-renders on a toggle or sync.
+                val taskQuickViewTaskId = uiState.taskQuickViewTaskId
+                val liveTask by homeViewModel.quickViewTaskLive.collectAsStateWithLifecycle()
+                if (taskQuickViewTaskId != null && liveTask?.id == taskQuickViewTaskId) {
+                    val task = liveTask!!
+                    val calendar = uiState.calendars.find { it.id == task.calendarId }
+                    TaskQuickViewSheet(
+                        task = task,
+                        calendarColor = calendar?.color ?: 0xFF6200EE.toInt(),
+                        calendarName = calendar?.localizedDisplayName(LocalContext.current.resources)
+                            ?: stringResource(R.string.label_calendar),
+                        timeFormat = uiState.timeFormat,
+                        onDismiss = { homeViewModel.dismissTaskQuickView() },
+                        onToggleDone = { homeViewModel.toggleTaskDone(task) },
+                        onEdit = {
+                            homeViewModel.dismissTaskQuickView()
+                            homeViewModel.showTaskForm(task.id)
+                        },
+                        onDelete = {
+                            homeViewModel.dismissTaskQuickView()
+                            homeViewModel.deleteTask(task)
+                        }
+                    )
+                }
+
+                // Task form sheet, hosted exactly like the event form: the host loads the
+                // edited task once per open (null for a create), and dismiss paths all run
+                // through HomeViewModel so the show-state in HomeUiState stays the one truth.
+                if (uiState.taskFormVisible) {
+                    var formTask by remember { mutableStateOf<Task?>(null) }
+                    var formTaskLoaded by remember { mutableStateOf(false) }
+                    androidx.compose.runtime.LaunchedEffect(uiState.taskFormEditTaskId) {
+                        formTask = uiState.taskFormEditTaskId?.let { homeViewModel.getTaskForEdit(it) }
+                        formTaskLoaded = true
+                    }
+                    if (formTaskLoaded) {
+                        TaskFormSheet(
+                            task = formTask,
+                            calendars = uiState.calendars,
+                            calendarGroups = uiState.calendarGroups,
+                            timeFormat = uiState.timeFormat,
+                            firstDayOfWeek = uiState.firstDayOfWeek,
+                            onDismiss = { homeViewModel.dismissTaskForm() },
+                            onSave = { formState -> homeViewModel.saveTask(formState) },
+                            onDelete = { task ->
+                                homeViewModel.dismissTaskForm()
+                                homeViewModel.deleteTask(task)
+                            }
+                        )
+                    }
                 }
 
                 // Share-as-card preview sheet, opened from either quick view. It renders a

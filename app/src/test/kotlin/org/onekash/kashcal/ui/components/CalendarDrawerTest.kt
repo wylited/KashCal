@@ -4,6 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -33,6 +34,8 @@ import org.robolectric.annotation.Config
  * "Contacts", then "Device calendars", then the Offline account (KashCal's own calendars) under a
  * heading of its own, before Settings; and the notifications-off mark, which every device calendar
  * carries while device reminders are off. The screen is tall so every LazyColumn item is composed.
+ * The drawer also always leads with an "Insights"/"Contacts" view-tab row; section assertions
+ * therefore target the sections' heading semantics, not the tab's text.
  *
  * Runs under Robolectric; run in isolation given the repo's multi-class native-crash flake.
  */
@@ -95,6 +98,15 @@ class CalendarDrawerTest {
 
     private fun top(text: String) = composeTestRule.onNodeWithText(text).fetchSemanticsNode().positionInRoot.y
 
+    /** Y of a section heading. Disambiguates from same-named view tabs: the drawer always
+     * shows an "Insights"/"Contacts" tab row, while only sections carry [heading] semantics. */
+    private fun headingNodes(text: String) = composeTestRule.onAllNodes(
+        hasText(text) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)
+    )
+
+    private fun topHeading(text: String) =
+        headingNodes(text).fetchSemanticsNodes().single().positionInRoot.y
+
     @Test
     fun `the Offline calendars come after the device calendars and before Settings`() {
         everything()
@@ -110,7 +122,7 @@ class CalendarDrawerTest {
 
         assertTrue(top("Calendars") < top("alex@example.test"))
         assertTrue(top("alex@example.test") < top("Work"))
-        assertTrue(top("Work") < top("Contacts"))
+        assertTrue(top("Work") < topHeading("Contacts"))
         assertEquals(1, composeTestRule.onAllNodes(hasText("Offline")).fetchSemanticsNodes().size)
     }
 
@@ -124,8 +136,8 @@ class CalendarDrawerTest {
 
         composeTestRule.onNodeWithText("Calendars").assertDoesNotExist()
         composeTestRule.onNodeWithTag(DRAWER_CALENDARS_DIVIDER_TAG).assertExists()
-        assertTrue(composeTestRule.onNodeWithTag(DRAWER_CALENDARS_DIVIDER_TAG).fetchSemanticsNode().positionInRoot.y < top("Contacts"))
-        assertTrue(top("Contacts") < top("Offline"))
+        assertTrue(composeTestRule.onNodeWithTag(DRAWER_CALENDARS_DIVIDER_TAG).fetchSemanticsNode().positionInRoot.y < topHeading("Contacts"))
+        assertTrue(topHeading("Contacts") < top("Offline"))
     }
 
     @Test
@@ -163,7 +175,9 @@ class CalendarDrawerTest {
         show(calendars = listOf(calendar(10, local.id, "My calendar")), accounts = listOf(local), deviceCalendars = emptyList())
 
         composeTestRule.onNodeWithText("Calendars").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Contacts").assertDoesNotExist()
+        // The drawer-level "Contacts" view tab (like Insights) is always present; only the
+        // birthdays/anniversaries *section* is absent here.
+        headingNodes("Contacts").assertCountEquals(0)
         composeTestRule.onNodeWithTag(DRAWER_CALENDARS_DIVIDER_TAG).assertDoesNotExist()
         assertTrue(top("Offline") < top("My calendar"))
         assertTrue(top("My calendar") < top("Settings"))

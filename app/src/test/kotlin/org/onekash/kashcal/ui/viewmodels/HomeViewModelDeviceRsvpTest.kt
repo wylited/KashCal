@@ -123,6 +123,9 @@ class HomeViewModelDeviceRsvpTest {
         deviceEventWriter = fakeCalendarProviderRepository.deviceEventWriter(dataStore, deviceManager),
         attendeeBackfill = mockk(relaxed = true),
         contactEmailReader = mockk(relaxed = true),
+        taskReader = mockk(relaxed = true),
+        taskRepository = mockk(relaxed = true),
+        widgetUpdateManager = mockk(relaxed = true),
         context = mockk(relaxed = true),
         ioDispatcher = testDispatcher,
     )

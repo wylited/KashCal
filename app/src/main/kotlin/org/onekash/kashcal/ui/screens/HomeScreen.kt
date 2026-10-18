@@ -137,6 +137,7 @@ import kotlinx.coroutines.launch
 import org.onekash.kashcal.R
 import org.onekash.kashcal.data.db.entity.Event
 import org.onekash.kashcal.data.db.entity.Occurrence
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.EmojiMatcher
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.domain.model.SearchResult
@@ -144,6 +145,8 @@ import org.onekash.kashcal.ui.components.CalendarDrawer
 import org.onekash.kashcal.ui.components.DayEventsSheet
 import org.onekash.kashcal.ui.components.EventCard
 import org.onekash.kashcal.ui.components.InvitationInboxSheet
+import org.onekash.kashcal.ui.components.ViewOption
+import org.onekash.kashcal.ui.components.iconForMode
 import org.onekash.kashcal.ui.components.hub.AccountAvatar
 import org.onekash.kashcal.ui.components.hub.AccountHubScreen
 import org.onekash.kashcal.ui.components.formatBadgeCount
@@ -179,6 +182,7 @@ import org.onekash.kashcal.domain.planner.PlannerWeekState
 import org.onekash.kashcal.ui.screens.insights.InsightsScreen
 import org.onekash.kashcal.ui.screens.planner.PlannerView
 import org.onekash.kashcal.ui.screens.planner.dayDetailEvents
+import org.onekash.kashcal.ui.screens.tasks.TasksScreen
 import org.onekash.kashcal.ui.util.plannerShownWeekStart
 import org.onekash.kashcal.ui.screens.insights.InsightsViewModel
 import org.onekash.kashcal.ui.util.DayPagerUtils
@@ -318,6 +322,11 @@ fun HomeScreen(
     onEnsureDotsForYear: (Int) -> Unit = {},
     dayAttendees: Map<Long, List<org.onekash.kashcal.ui.components.attendees.AttendeeUiModel>> = emptyMap(),
     onSetVisibleEventIds: (List<Long>) -> Unit = {},
+    // Tasks view: the agenda-domain task list and its row actions
+    tasks: List<Task> = emptyList(),
+    onToggleTaskDone: (Task) -> Unit = {},
+    onTaskClick: (Task) -> Unit = {},
+    onNewTask: () -> Unit = {},
 ) {
     // Month pager, about 100 years each direction
     val initialPage = MonthPagerUtils.INITIAL_PAGE
@@ -545,6 +554,9 @@ fun HomeScreen(
         drawerContent = {
             CalendarDrawer(
                 currentViewMode = uiState.viewMode,
+                // The Views settings' order minus hidden views, so a reorder or hide in the
+                // settings reaches the drawer instead of the static default list.
+                viewOptions = uiState.visibleViews.map { ViewOption(it, iconForMode(it)) },
                 calendarGroups = uiState.calendarGroups,
                 deviceCalendarsEnabled = uiState.deviceCalendarsEnabled,
                 enabledDeviceCalendars = uiState.enabledDeviceCalendars,
@@ -606,13 +618,25 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            // Insights is a read-only analytics view, so it has no create button.
-            if (uiState.viewMode != ViewMode.INSIGHTS) {
-                FloatingActionButton(
-                    onClick = onCreateEvent,
-                    containerColor = MaterialTheme.colorScheme.primary
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = stringResource(R.string.cd_create_event))
+            when {
+                // Insights is a read-only analytics view, so it has no create button.
+                uiState.viewMode == ViewMode.INSIGHTS -> {}
+                // Tasks creates tasks, not events.
+                uiState.viewMode == ViewMode.TASKS -> {
+                    FloatingActionButton(
+                        onClick = onNewTask,
+                        containerColor = MaterialTheme.colorScheme.primary
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = stringResource(R.string.task_new))
+                    }
+                }
+                else -> {
+                    FloatingActionButton(
+                        onClick = onCreateEvent,
+                        containerColor = MaterialTheme.colorScheme.primary
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = stringResource(R.string.cd_create_event))
+                    }
                 }
             }
         },
@@ -694,6 +718,16 @@ fun HomeScreen(
                                 },
                                 onYearChanged = onEnsureDotsForYear,
                                 onBackToMonth = { onViewSelect(ViewMode.MONTH) }
+                            )
+                        }
+                        uiState.viewMode == ViewMode.TASKS -> {
+                            TasksScreen(
+                                tasks = tasks,
+                                calendars = uiState.calendars,
+                                timePattern = timePattern,
+                                todayDayCode = todayDayCode,
+                                onToggleTaskDone = onToggleTaskDone,
+                                onTaskClick = onTaskClick,
                             )
                         }
                         uiState.viewMode == ViewMode.AGENDA || uiState.viewMode.isTimeGrid -> {

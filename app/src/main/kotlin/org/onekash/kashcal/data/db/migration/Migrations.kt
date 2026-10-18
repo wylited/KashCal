@@ -1495,7 +1495,8 @@ object Migrations {
 
     private val PENDING_TASK_OPERATIONS_COLUMNS = listOf(
         "id", "task_id", "operation", "status", "retry_count", "max_retries", "next_retry_at",
-        "last_error", "created_at", "updated_at", "target_url", "target_calendar_id"
+        "last_error", "created_at", "updated_at", "target_url", "target_calendar_id",
+        "source_calendar_id"
     )
 
     /**
@@ -1560,7 +1561,7 @@ object Migrations {
                         "`next_retry_at` INTEGER NOT NULL DEFAULT 0, " +
                         "`last_error` TEXT, `created_at` INTEGER NOT NULL, " +
                         "`updated_at` INTEGER NOT NULL, `target_url` TEXT, " +
-                        "`target_calendar_id` INTEGER)"
+                        "`target_calendar_id` INTEGER, `source_calendar_id` INTEGER)"
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS " +

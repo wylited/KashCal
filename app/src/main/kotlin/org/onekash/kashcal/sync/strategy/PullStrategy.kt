@@ -35,6 +35,7 @@ import org.onekash.kashcal.sync.model.SyncChange
 import org.onekash.kashcal.sync.parser.ServerColorParser
 import org.onekash.kashcal.sync.parser.icaldav.EventToICalEventMapper
 import org.onekash.kashcal.sync.parser.icaldav.ICalEventMapper
+import org.onekash.kashcal.sync.parser.icaldav.ICalTodoMapper
 import org.onekash.kashcal.sync.quirks.CalDavQuirks
 import org.onekash.kashcal.sync.session.SyncSessionBuilder
 import org.onekash.kashcal.sync.util.CaldavUrlNormalizer
@@ -121,6 +122,13 @@ class PullStrategy @Inject constructor(
     private val reminderScheduler: org.onekash.kashcal.reminder.scheduler.ReminderScheduler
 ) {
     private val icalParser = ICalParser()
+
+    /**
+     * Task reads and writes, reached through the database like [EventReader]'s DAOs do, so a
+     * VTODO-less calendar's pull never touches them and tests can stub the DAO off the
+     * database mock.
+     */
+    private val tasksDao by lazy { database.tasksDao() }
 
     private val categoryDao by lazy { database.categoryDao() }
 
@@ -218,9 +226,11 @@ class PullStrategy @Inject constructor(
         private const val INITIAL_DB_RETRY_DELAY_MS = 100L
 
         /**
-         * Reports whether [icalData] holds VTODO, VJOURNAL or VFREEBUSY but no VEVENT, which
-         * separates a valid non-event resource from a parse failure when parseAllEvents()
-         * returns empty.
+         * Reports whether [icalData] holds a component the event pass doesn't ingest but no
+         * VEVENT, which separates a valid non-event resource from a parse failure when
+         * parseAllEvents() returns empty. VJOURNAL and VFREEBUSY are unsupported and skipped
+         * for good; VTODO is ingested by [processTasks], so a VTODO-only resource is only
+         * silenced here to stay out of the parse-failure accounting.
          */
         private fun isNonEventResource(icalData: String): Boolean {
             return !icalData.contains("BEGIN:VEVENT") &&
@@ -298,6 +308,9 @@ class PullStrategy @Inject constructor(
      *   ([PushResult.Success.refetchEventIds]). They are also in [recentlyPushedEventIds], so
      *   still never deleted, but they are refreshed like any changed event, exceptions their EXDATE
      *   covers pruned, since a later sync-collection listing won't name them again.
+     * @param recentlyPushedTaskIds tasks pushed earlier in this sync cycle, which the VTODO
+     *   half of the pull (the mixed-resource task pass) keeps over a possibly stale read,
+     *   exactly like [pullTasks] does for the task listing.
      * @return [PullResult.NoChanges] when the ctag is unchanged. A 401/403 ctag probe, a failed
      *   listing, a network failure or any other exception returns [PullResult.Error];
      *   cancellation is rethrown.
@@ -309,7 +322,8 @@ class PullStrategy @Inject constructor(
         client: CalDavClient,
         sessionBuilder: SyncSessionBuilder? = null,
         recentlyPushedEventIds: Set<Long> = emptySet(),
-        refetchEventIds: Set<Long> = emptySet()
+        refetchEventIds: Set<Long> = emptySet(),
+        recentlyPushedTaskIds: Set<Long> = emptySet()
     ): PullResult {
         val effectiveQuirks = quirks ?: defaultQuirks
         val effectiveClient = client
@@ -347,9 +361,9 @@ class PullStrategy @Inject constructor(
             }
 
             val result = if (!forceFullSync && calendar.syncToken != null) {
-                pullIncremental(calendar, effectiveQuirks, effectiveClient, sessionBuilder, recentlyPushedEventIds, refetchEventIds)
+                pullIncremental(calendar, effectiveQuirks, effectiveClient, sessionBuilder, recentlyPushedEventIds, refetchEventIds, recentlyPushedTaskIds)
             } else {
-                pullFull(calendar, effectiveQuirks, effectiveClient, sessionBuilder, recentlyPushedEventIds, refetchEventIds, forceFullSync = forceFullSync)
+                pullFull(calendar, effectiveQuirks, effectiveClient, sessionBuilder, recentlyPushedEventIds, refetchEventIds, recentlyPushedTaskIds, forceFullSync = forceFullSync)
             }
 
             // A null token or ctag in the result keeps the stored token and takes the probed ctag.
@@ -459,7 +473,8 @@ class PullStrategy @Inject constructor(
         clientToUse: CalDavClient,
         sessionBuilder: SyncSessionBuilder?,
         recentlyPushedEventIds: Set<Long>,
-        refetchEventIds: Set<Long>
+        refetchEventIds: Set<Long>,
+        recentlyPushedTaskIds: Set<Long>
     ): PullResult {
         Log.d(TAG, "Incremental sync with token: ${calendar.syncToken?.take(8)}...")
 
@@ -469,13 +484,13 @@ class PullStrategy @Inject constructor(
             // 403/410: the sync-token expired.
             if (error.code == 403 || error.code == 410) {
                 Log.w(TAG, "Sync token expired (${error.code}), trying etag-based fallback")
-                val etagResult = pullWithEtagComparison(calendar, quirks, clientToUse, sessionBuilder, recentlyPushedEventIds, refetchEventIds)
+                val etagResult = pullWithEtagComparison(calendar, quirks, clientToUse, sessionBuilder, recentlyPushedEventIds, refetchEventIds, recentlyPushedTaskIds)
                 if (etagResult != null) {
                     Log.d(TAG, "Etag-based fallback succeeded")
                     return etagResult
                 }
                 Log.w(TAG, "Etag fallback returned null, falling back to full sync")
-                return pullFull(calendar, quirks, clientToUse, sessionBuilder, recentlyPushedEventIds, refetchEventIds)
+                return pullFull(calendar, quirks, clientToUse, sessionBuilder, recentlyPushedEventIds, refetchEventIds, recentlyPushedTaskIds)
             }
             return PullResult.Error(error.code, error.message, error.isRetryable)
         }
@@ -565,7 +580,7 @@ class PullStrategy @Inject constructor(
         }
 
         // A stored sync-token means this is never the initial sync.
-        val processResult = processEvents(calendar, serverEvents, sessionBuilder, recentlyPushedEventIds, refetchEventIds, isInitialSync = false)
+        val processResult = processEvents(calendar, serverEvents, sessionBuilder, recentlyPushedEventIds, refetchEventIds, isInitialSync = false, recentlyPushedTaskIds = recentlyPushedTaskIds)
 
         // Duplicate masters can come from iCloud hostname changes (p180 → p181) or concurrent
         // syncs racing.
@@ -637,6 +652,7 @@ class PullStrategy @Inject constructor(
         sessionBuilder: SyncSessionBuilder?,
         recentlyPushedEventIds: Set<Long>,
         refetchEventIds: Set<Long>,
+        recentlyPushedTaskIds: Set<Long>,
         forceFullSync: Boolean = false
     ): PullResult {
         val dedupedCount = eventsDao.deleteDuplicateMasterEvents()
@@ -767,7 +783,7 @@ class PullStrategy @Inject constructor(
         // first sync they would land on every event, and a forced sync re-lists events the user
         // already has.
         val skipDefaultReminders = (calendar.syncToken == null) || forceFullSync
-        val processResult = processEvents(calendar, serverEvents, sessionBuilder, recentlyPushedEventIds, refetchEventIds, skipDefaultReminders)
+        val processResult = processEvents(calendar, serverEvents, sessionBuilder, recentlyPushedEventIds, refetchEventIds, skipDefaultReminders, recentlyPushedTaskIds)
 
         val allChanges = deletedChanges + processResult.changes
 
@@ -799,7 +815,8 @@ class PullStrategy @Inject constructor(
         clientToUse: CalDavClient,
         sessionBuilder: SyncSessionBuilder?,
         recentlyPushedEventIds: Set<Long>,
-        refetchEventIds: Set<Long>
+        refetchEventIds: Set<Long>,
+        recentlyPushedTaskIds: Set<Long>
     ): PullResult? {
         Log.d(TAG, "Attempting etag-based fallback sync for calendar: ${calendar.displayName}")
 
@@ -930,7 +947,7 @@ class PullStrategy @Inject constructor(
         Log.d(TAG, "Fetched ${serverEvents.size} events via multiget (requested ${hrefsToFetch.size})")
 
         // Only pullIncremental calls this, so it is never the initial sync.
-        val processResult = processEvents(calendar, serverEvents, sessionBuilder, recentlyPushedEventIds, refetchEventIds, isInitialSync = false)
+        val processResult = processEvents(calendar, serverEvents, sessionBuilder, recentlyPushedEventIds, refetchEventIds, isInitialSync = false, recentlyPushedTaskIds = recentlyPushedTaskIds)
 
         val allChanges = deletedChanges + processResult.changes
 
@@ -945,6 +962,114 @@ class PullStrategy @Inject constructor(
             newCtag = null,
             changes = allChanges
         )
+    }
+
+    /**
+     * Pulls one CalDAV calendar's tasks from the server into Room, the task counterpart of
+     * [pull]. Tasks never ride [pull]'s listings — fetchEtagsInRange and the sync-collection
+     * REPORT filter on VEVENT — so this lists the collection itself with a PROPFIND Depth:1
+     * ([CalDavClient.fetchAllEtags]), which returns VTODO resources too:
+     *
+     * 1. Local tasks the server no longer lists are deleted, except ones with pending local
+     *    changes and ones pushed earlier in this sync cycle (RFC 4791 gives no visibility
+     *    guarantee right after a PUT, so the server may not have indexed it yet).
+     * 2. Resources whose etag differs from the local row's are fetched by multiget and their
+     *    VTODOs ingested by [processTasks], which applies the same local-first skips as the
+     *    event pass.
+     *
+     * There is no ctag or sync-token shortcut: the calendar's event token says nothing about
+     * its tasks, so every sync lists the collection once more. A failed listing or fetch
+     * becomes a session warning, not a sync error — tasks lag a cycle rather than failing it.
+     *
+     * @param quirks provider quirks; null uses the injected default (iCloud).
+     * @param recentlyPushedTaskIds tasks pushed earlier in this sync cycle
+     *   ([TaskPushResult.pushedTaskIds]), which the sweep never deletes and whose rows the
+     *   ingestion pass keeps over a possibly stale server read.
+     */
+    suspend fun pullTasks(
+        calendar: Calendar,
+        quirks: CalDavQuirks? = null,
+        client: CalDavClient,
+        sessionBuilder: SyncSessionBuilder? = null,
+        recentlyPushedTaskIds: Set<Long> = emptySet()
+    ): TaskPullResult {
+        if (!calendar.supportsVTodo) return TaskPullResult(0, 0, 0)
+        val effectiveQuirks = quirks ?: defaultQuirks
+
+        return try {
+            val listingResult = client.fetchAllEtags(calendar.caldavUrl)
+            if (listingResult.isError()) {
+                val error = listingResult as CalDavResult.Error
+                Log.w(TAG, "Task listing failed: ${error.code} - ${error.message}")
+                sessionBuilder?.addWarning("Task pull failed (${error.code}): ${error.message}")
+                return TaskPullResult(0, 0, 0)
+            }
+            val serverEtags = (listingResult as CalDavResult.Success).data
+
+            // Compared on a canonical URL so a resource the server echoes with equivalent
+            // percent-encoding (Radicale re-encodes a literal '@' in the filename as '%40')
+            // isn't taken for a server-side deletion and destroyed locally (#333), exactly
+            // like pullFull's sweep.
+            val serverUrls = serverEtags.mapTo(HashSet(serverEtags.size)) { (href, _) ->
+                val url = effectiveQuirks.buildEventUrl(href, calendar.caldavUrl)
+                CaldavUrlNormalizer.canonicalize(url) ?: url
+            }
+
+            var deleted = 0
+            val sweptIds = mutableSetOf<Long>()
+            val localTasks = tasksDao.getAllForCalendar(calendar.id)
+            for (task in localTasks) {
+                // A row without a server URL was never listed; there is nothing to sweep.
+                val url = task.caldavUrl ?: continue
+                if (task.hasPendingChanges() || task.id in recentlyPushedTaskIds) {
+                    Log.d(TAG, "Keeping task $url - " +
+                        if (task.hasPendingChanges()) "has pending local changes (${task.syncStatus})"
+                        else "recently pushed in this sync cycle")
+                    continue
+                }
+                if ((CaldavUrlNormalizer.canonicalize(url) ?: url) !in serverUrls) {
+                    Log.d(TAG, "Deleting stale task: $url")
+                    tasksDao.deleteById(task.id)
+                    sweptIds.add(task.id)
+                    deleted++
+                }
+            }
+
+            // Unchanged etags aren't fetched. Keyed on the canonical URL so an '@'-in-filename
+            // resource the server re-encodes as '%40' still matches its local etag. Swept rows
+            // are gone; keeping them in the map would only over-fetch.
+            val localEtagMap = localTasks
+                .filter { it.id !in sweptIds && it.caldavUrl != null }
+                .associate {
+                    (CaldavUrlNormalizer.canonicalize(it.caldavUrl!!) ?: it.caldavUrl!!) to it.etag
+                }
+
+            val hrefsToFetch = mutableListOf<String>()
+            for ((href, serverEtag) in serverEtags) {
+                val eventUrl = effectiveQuirks.buildEventUrl(href, calendar.caldavUrl)
+                val localEtag = localEtagMap[CaldavUrlNormalizer.canonicalize(eventUrl) ?: eventUrl]
+                if (localEtag == null || localEtag != serverEtag) {
+                    hrefsToFetch.add(href)
+                }
+            }
+
+            if (hrefsToFetch.isEmpty()) {
+                return TaskPullResult(0, 0, deleted)
+            }
+
+            val fetchResult = fetchEventsBatched(client, calendar.caldavUrl, hrefsToFetch, sessionBuilder)
+            val (added, updated) = processTasks(
+                calendar, fetchResult.events, sessionBuilder, recentlyPushedTaskIds
+            )
+            TaskPullResult(added, updated, deleted)
+        } catch (e: CancellationException) {
+            Log.d(TAG, "Task pull cancelled")
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Task pull failed: ${e.message}", e)
+            sessionBuilder?.addWarning("Task pull failed: ${e.message}")
+            TaskPullResult(0, 0, 0)
+        }
     }
 
     /** Counts and per-event changes for the UI from [processEvents]. */
@@ -1018,7 +1143,8 @@ class PullStrategy @Inject constructor(
         sessionBuilder: SyncSessionBuilder?,
         recentlyPushedEventIds: Set<Long>,
         refetchEventIds: Set<Long>,
-        isInitialSync: Boolean = false
+        isInitialSync: Boolean = false,
+        recentlyPushedTaskIds: Set<Long> = emptySet()
     ): ProcessEventsResult {
         var added = 0
         var updated = 0
@@ -1026,6 +1152,12 @@ class PullStrategy @Inject constructor(
 
         // Read once per batch for the per-event invite and decline checks.
         val accountForInvites = accountRepository.getAccountById(calendar.accountId)
+
+        // Task pass first: VTODOs riding in these resources (VTODO-only, or the VTODO half of
+        // a mixed VEVENT+VTODO resource) are ingested before the event pass silences their
+        // resources as non-event ones. A task pushed earlier in this sync cycle is skipped,
+        // exactly as the dedicated task listing pass does.
+        processTasks(calendar, serverEvents, sessionBuilder, recentlyPushedTaskIds)
 
         // First pass: parse every resource and split masters from exceptions.
         val masterEvents = mutableListOf<ParsedEventWithMeta>()
@@ -1055,7 +1187,7 @@ class PullStrategy @Inject constructor(
 
             if (parsedEvents.isEmpty()) {
                 if (isNonEventResource(serverEvent.icalData)) {
-                    Log.d(TAG, "Skipping non-event resource at ${serverEvent.url} (VTODO/VJOURNAL/VFREEBUSY)")
+                    Log.d(TAG, "Skipping non-event resource at ${serverEvent.url} (VJOURNAL/VFREEBUSY; a VTODO rides the task pass)")
                     continue
                 }
                 Log.w(TAG, "Failed to parse event at ${serverEvent.url}: no VEVENT components found")
@@ -1720,6 +1852,125 @@ class PullStrategy @Inject constructor(
         return ProcessEventsResult(added, updated, changes)
     }
 
+    /**
+     * Ingests the VTODOs of [serverEvent]s into Room: the VTODO half of a mixed VEVENT+VTODO
+     * resource, and the VTODO-only resources an incremental sync-collection listing delivers
+     * alongside events. Runs only for calendars advertising VTODO support.
+     *
+     * Mirrors the event pass' local-first rules: a task with pending local changes is skipped
+     * so the push sends the user's edit first, and an unchanged etag means identical data, so
+     * there is nothing to upsert. A task pushed earlier in this sync cycle keeps its local
+     * version ([recentlyPushedTaskIds]): iCloud's CDN may serve a stale read before the PUT
+     * has propagated, and the local row holds the etag the write returned.
+     *
+     * @return added and updated task counts, for the caller's session accounting.
+     */
+    private suspend fun processTasks(
+        calendar: Calendar,
+        serverEvents: List<CalDavEvent>,
+        sessionBuilder: SyncSessionBuilder?,
+        recentlyPushedTaskIds: Set<Long> = emptySet()
+    ): Pair<Int, Int> {
+        if (!calendar.supportsVTodo) return 0 to 0
+
+        var added = 0
+        var updated = 0
+
+        for (serverEvent in serverEvents) {
+            if (!serverEvent.icalData.contains("BEGIN:VTODO")) continue
+
+            val parseResult = try {
+                icalParser.parseAllTodos(serverEvent.icalData)
+            } catch (e: Exception) {
+                Log.e(TAG, "Task parse exception for ${serverEvent.url}: ${e.javaClass.simpleName}: ${e.message}")
+                sessionBuilder?.incrementSkipParseError()
+                sessionBuilder?.addWarning("Failed to parse task ${filenameOf(serverEvent.url)}: ${e.javaClass.simpleName}: ${e.message}")
+                continue
+            }
+
+            val todos = when (parseResult) {
+                is ParseResult.Success -> parseResult.value
+                is ParseResult.Error -> {
+                    Log.w(TAG, "Task parse error for ${serverEvent.url}: ${parseResult.error.message}")
+                    sessionBuilder?.incrementSkipParseError()
+                    sessionBuilder?.addWarning("Task parse error for ${filenameOf(serverEvent.url)}: ${parseResult.error.message}")
+                    continue
+                }
+            }
+
+            for (todo in todos) {
+                // UID first, like the event pass: it is stable across server hostname changes.
+                // The caldavUrl fallback is a global query, and a row moved to another calendar
+                // keeps its old URL, so only a hit in this calendar counts.
+                val existing = tasksDao.getByUidAndCalendar(todo.uid, calendar.id)
+                    ?: tasksDao.getByCaldavUrl(serverEvent.url)?.takeIf { it.calendarId == calendar.id }
+
+                // Local-first: TaskPushStrategy sends pending local changes first; the server
+                // wins only after they are synced, or the local edit would be lost.
+                if (existing != null && existing.hasPendingChanges()) {
+                    Log.d(TAG, "Skipping task at ${serverEvent.url} - has pending local changes (${existing.syncStatus})")
+                    sessionBuilder?.incrementSkipPendingLocal()
+                    continue
+                }
+
+                if (existing != null && existing.id in recentlyPushedTaskIds) {
+                    Log.d(TAG, "Skipping task at ${serverEvent.url} - recently pushed in this sync cycle")
+                    sessionBuilder?.incrementSkipRecentlyPushed()
+                    continue
+                }
+
+                // An unchanged etag means identical data, so there is nothing to upsert. After
+                // a first-attempt write the local row holds the server's new etag, so this also
+                // stops an eventually consistent read from overwriting it with stale data.
+                if (existing != null && existing.etag != null && existing.etag == serverEvent.etag) {
+                    Log.d(TAG, "Skipping task at ${serverEvent.url} - etag unchanged (${serverEvent.etag})")
+                    sessionBuilder?.incrementSkipEtagUnchanged()
+                    continue
+                }
+
+                // The try spans map and upsert and isolates a failure to this one todo, like
+                // the event pass does; a hostile VTODO must not abort the calendar's pull.
+                try {
+                    val mapped = ICalTodoMapper.toEntity(
+                        todo = todo,
+                        rawIcal = serverEvent.icalData,
+                        calendarId = calendar.id,
+                        caldavUrl = serverEvent.url,
+                        etag = serverEvent.etag
+                    )
+                    var task = mapped
+                    if (existing != null) {
+                        // Keeps the row id, timestamps and the original created time; the
+                        // stored etag is kept when the response omits <getetag> (RFC 4791).
+                        task = task.copy(
+                            id = existing.id,
+                            createdAt = existing.createdAt,
+                            localModifiedAt = existing.localModifiedAt,
+                            etag = serverEvent.etag ?: existing.etag
+                        )
+                    }
+                    withDbRetry {
+                        database.runInTransaction {
+                            tasksDao.upsert(task)
+                        }
+                    }
+                    if (existing == null) {
+                        added++
+                        sessionBuilder?.incrementWritten()
+                    } else {
+                        updated++
+                        sessionBuilder?.incrementUpdated()
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    recordProcessingFailure(sessionBuilder, serverEvent.url, "task ${todo.uid}", e)
+                }
+            }
+        }
+
+        return added to updated
+    }
+
     /** A parsed VEVENT with the resource it came from. */
     private data class ParsedEventWithMeta(
         val parsed: ICalEvent,
@@ -1808,3 +2059,10 @@ class PullStrategy @Inject constructor(
         }.awaitAll().flatten()
     }
 }
+
+/** Counts from one [PullStrategy.pullTasks] run; the sync engine folds them into its totals. */
+data class TaskPullResult(
+    val added: Int,
+    val updated: Int,
+    val deleted: Int
+)

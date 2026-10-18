@@ -135,6 +135,9 @@ class HomeViewModelDeviceCalendarWriteTest {
             deviceEventWriter = fakeCalendarProviderRepository.deviceEventWriter(dataStore),
             attendeeBackfill = io.mockk.mockk(relaxed = true),
             contactEmailReader = io.mockk.mockk(relaxed = true),
+            taskReader = io.mockk.mockk(relaxed = true),
+            taskRepository = io.mockk.mockk(relaxed = true),
+            widgetUpdateManager = io.mockk.mockk(relaxed = true),
             context = io.mockk.mockk(relaxed = true),
             ioDispatcher = testDispatcher
         )

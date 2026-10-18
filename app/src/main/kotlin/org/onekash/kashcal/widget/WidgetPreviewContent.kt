@@ -54,6 +54,7 @@ internal object WidgetPreviewSizes {
     val MONTH = SizeMode.Responsive(setOf(previewSize(4, 4, 250.dp, 304.dp)))
     val DATE = SizeMode.Responsive(setOf(previewSize(1, 1, 57.dp, 57.dp)))
     val UPCOMING = SizeMode.Responsive(setOf(previewSize(4, 4, 180.dp, 130.dp)))
+    val TASKS = SizeMode.Responsive(setOf(previewSize(4, 2, 250.dp, 110.dp)))
 }
 
 @Composable
@@ -64,7 +65,8 @@ internal fun AgendaPreviewContent(context: Context) {
             currentDate = widgetHeaderDate(),
             showEventEmojis = true,
             timePattern = WidgetPreviewData.timePattern(context),
-            maxEventsPerDay = WidgetPreviewData.MAX_EVENTS_PER_DAY
+            maxEventsPerDay = WidgetPreviewData.MAX_EVENTS_PER_DAY,
+            tasks = WidgetPreviewData.tasks(context).take(1)
         )
     }
 }
@@ -107,6 +109,17 @@ internal fun UpcomingPreviewContent(context: Context) {
             eventsByDay = WidgetPreviewData.upcomingEvents(context),
             todayDayCode = WidgetPreviewData.dayCodeOf(LocalDate.now()),
             showEventEmojis = true,
+            timePattern = WidgetPreviewData.timePattern(context),
+            openTasks = WidgetPreviewData.tasks(context)
+        )
+    }
+}
+
+@Composable
+internal fun TasksPreviewContent(context: Context) {
+    GlanceTheme {
+        TasksWidgetContent(
+            tasks = WidgetPreviewData.tasks(context),
             timePattern = WidgetPreviewData.timePattern(context)
         )
     }

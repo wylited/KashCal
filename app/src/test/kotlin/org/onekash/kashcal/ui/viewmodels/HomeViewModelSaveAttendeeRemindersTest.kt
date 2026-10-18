@@ -107,6 +107,9 @@ class HomeViewModelSaveAttendeeRemindersTest {
         deviceEventWriter = fakeCalendarProviderRepository.deviceEventWriter(dataStore),
         attendeeBackfill = mockk(relaxed = true),
         contactEmailReader = mockk(relaxed = true),
+        taskReader = mockk(relaxed = true),
+        taskRepository = mockk(relaxed = true),
+        widgetUpdateManager = mockk(relaxed = true),
         context = mockk(relaxed = true),
         ioDispatcher = testDispatcher
     )

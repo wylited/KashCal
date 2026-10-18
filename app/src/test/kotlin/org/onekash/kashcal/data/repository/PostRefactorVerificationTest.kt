@@ -33,6 +33,7 @@ import org.onekash.kashcal.reminder.scheduler.ReminderScheduler
 import org.onekash.kashcal.sync.strategy.ConflictResolver
 import org.onekash.kashcal.sync.strategy.PullStrategy
 import org.onekash.kashcal.sync.strategy.PushStrategy
+import org.onekash.kashcal.sync.strategy.TaskPushStrategy
 
 /**
  * Tests that account data goes through [AccountRepository] and the unified [CredentialManager].
@@ -263,6 +264,7 @@ class PostRefactorVerificationTest {
         val mockCalendarRepository: CalendarRepository = mockk(relaxed = true)
         val mockPullStrategy: PullStrategy = mockk(relaxed = true)
         val mockPushStrategy: PushStrategy = mockk(relaxed = true)
+        val mockTaskPushStrategy: TaskPushStrategy = mockk(relaxed = true)
         val mockConflictResolver: ConflictResolver = mockk(relaxed = true)
         val mockEventsDao: EventsDao = mockk(relaxed = true)
         val mockPendingOperationsDao: PendingOperationsDao = mockk(relaxed = true)
@@ -274,6 +276,7 @@ class PostRefactorVerificationTest {
         val syncEngine = org.onekash.kashcal.sync.engine.CalDavSyncEngine(
             pullStrategy = mockPullStrategy,
             pushStrategy = mockPushStrategy,
+            taskPushStrategy = mockTaskPushStrategy,
             conflictResolver = mockConflictResolver,
             calendarRepository = mockCalendarRepository,
             eventsDao = mockEventsDao,

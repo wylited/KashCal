@@ -1,20 +1,36 @@
 package org.onekash.kashcal.domain.model
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.onekash.kashcal.data.calendar_provider.DeviceCalendarInstance
 import org.robolectric.RobolectricTestRunner
+import java.util.TimeZone
 
 /**
  * Tests the device event action helpers [toEventForDuplicate] and [buildShareText].
  */
 @RunWith(RobolectricTestRunner::class)
 class DeviceEventActionsTest {
+
+    private val savedTimeZone = TimeZone.getDefault()
+
+    // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
+    @Before
+    fun pinUtc() {
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+    }
+
+    @After
+    fun restoreZone() {
+        TimeZone.setDefault(savedTimeZone)
+    }
 
     private fun createTestInstance(
         title: String = "Team Meeting",

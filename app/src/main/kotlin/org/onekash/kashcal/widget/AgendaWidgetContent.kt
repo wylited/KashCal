@@ -37,10 +37,13 @@ import org.onekash.kashcal.ui.util.DayPagerUtils
 /**
  * Renders the agenda widget: today's date header over the event list, or an empty state.
  *
+ * Open tasks due today (or overdue) interleave into the list after the all-day events and
+ * before the timed events, matching the in-app agenda's day ordering, each with its checkbox.
+ *
  * @param currentDate the formatted date for the header
  * @param showEventEmojis whether titles get auto-detected emojis
  * @param timePattern the time format, for example "h:mm a" or "HH:mm"
- * @param maxEventsPerDay events shown before the "more" row
+ * @param maxEventsPerDay rows shown before the "more" row, events and tasks together
  */
 @Composable
 fun AgendaWidgetContent(
@@ -50,7 +53,8 @@ fun AgendaWidgetContent(
     timePattern: String = "h:mm a",
     maxEventsPerDay: Int = 5,
     isRefreshing: Boolean = false,
-    detailedRows: Boolean = false
+    detailedRows: Boolean = false,
+    tasks: List<WidgetDataRepository.WidgetTask> = emptyList()
 ) {
     Column(
         modifier = GlanceModifier
@@ -60,11 +64,11 @@ fun AgendaWidgetContent(
     ) {
         WidgetHeader(currentDate, isRefreshing)
 
-        if (events.isEmpty()) {
+        if (events.isEmpty() && tasks.isEmpty()) {
             EmptyState()
         } else {
             val todayCode = DayPagerUtils.msToDayCode(System.currentTimeMillis())
-            EventList(events, showEventEmojis, timePattern, maxEventsPerDay, todayCode, detailedRows)
+            EventList(events, tasks, showEventEmojis, timePattern, maxEventsPerDay, todayCode, detailedRows)
         }
     }
 }
@@ -119,26 +123,50 @@ private fun WidgetHeader(date: String, isRefreshing: Boolean) {
     }
 }
 
-/** Lists the first [maxEventsPerDay] events, then a "more" row for the rest. */
+/**
+ * One row of today's list: an event or an open task. The list orders it all-day events first,
+ * then tasks, then timed events — the in-app agenda's day ordering.
+ */
+private sealed interface AgendaRow {
+    data class EventRow(val event: WidgetDataRepository.WidgetEvent) : AgendaRow
+    data class TaskRow(val task: WidgetDataRepository.WidgetTask) : AgendaRow
+}
+
+/**
+ * Lists the first [maxEventsPerDay] rows — all-day events, then open tasks due today, then
+ * timed events — then a "more" row for the rest.
+ */
 @Composable
 private fun EventList(
     events: List<WidgetDataRepository.WidgetEvent>,
+    tasks: List<WidgetDataRepository.WidgetTask>,
     showEventEmojis: Boolean,
     timePattern: String,
     maxEventsPerDay: Int,
     dayCode: Int,
     detailedRows: Boolean
 ) {
-    val visibleEvents = events.take(maxEventsPerDay)
-    val overflowCount = events.size - maxEventsPerDay
+    val (allDayEvents, timedEvents) = events.partition { it.isAllDay }
+    val rows = buildList {
+        allDayEvents.forEach { add(AgendaRow.EventRow(it)) }
+        tasks.forEach { add(AgendaRow.TaskRow(it)) }
+        timedEvents.forEach { add(AgendaRow.EventRow(it)) }
+    }
+    val visibleRows = rows.take(maxEventsPerDay)
+    val overflowCount = rows.size - maxEventsPerDay
 
     LazyColumn(
         modifier = GlanceModifier
             .fillMaxSize()
             .padding(vertical = 4.dp)
     ) {
-        items(visibleEvents) { event ->
-            EventRow(event, showEventEmojis, timePattern, dayCode, detailedRows)
+        items(visibleRows) { row ->
+            when (row) {
+                is AgendaRow.EventRow ->
+                    EventRow(row.event, showEventEmojis, timePattern, dayCode, detailedRows)
+                is AgendaRow.TaskRow ->
+                    TaskRow(row.task, timePattern, detailedRows)
+            }
         }
 
         if (overflowCount > 0) {
@@ -191,6 +219,33 @@ private fun EventRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         EventRowInner(event, dayCode, showEventEmojis, timePattern, detailedRows)
+    }
+}
+
+/** Shows one open task due today; tapping opens the app at today, as the overflow row does. */
+@Composable
+private fun TaskRow(
+    task: WidgetDataRepository.WidgetTask,
+    timePattern: String,
+    detailedRows: Boolean
+) {
+    Row(
+        modifier = GlanceModifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = WIDGET_HORIZONTAL_MARGIN_DP.dp,
+                vertical = eventRowVerticalPaddingDp(detailedRows).dp
+            )
+            .clickable(
+                actionStartActivity<MainActivity>(
+                    parameters = actionParametersOf(
+                        ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_GO_TO_TODAY
+                    )
+                )
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TaskRowInner(task, System.currentTimeMillis(), timePattern, detailedRows)
     }
 }
 

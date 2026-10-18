@@ -21,6 +21,23 @@ import org.onekash.kashcal.ui.model.CalendarGroup
 import org.onekash.kashcal.util.CalendarIntentData
 import java.time.LocalDate
 
+/**
+ * The picker's default visible views: the ViewMode declaration order minus the drawer-only
+ * INSIGHTS and CONTACTS. Matches the ViewMode declaration order the DataStore's self-healing
+ * fallback uses, so the first emission after a fresh install is a no-op.
+ */
+private val DEFAULT_VISIBLE_VIEWS: ImmutableList<ViewMode> = persistentListOf(
+    ViewMode.MONTH,
+    ViewMode.AGENDA,
+    ViewMode.TASKS,
+    ViewMode.DAY,
+    ViewMode.THREE_DAYS,
+    ViewMode.WEEK,
+    ViewMode.PLANNER,
+    ViewMode.MONTH_FULL,
+    ViewMode.YEAR,
+)
+
 /** Holds the state HomeScreen renders, published by [HomeViewModel]. */
 @Immutable
 data class HomeUiState(
@@ -181,6 +198,13 @@ data class HomeUiState(
     val showOnboardingSheet: Boolean = false,
     /** Release notes the upgraded user hasn't acknowledged yet, ascending by versionCode. */
     val whatsNewReleases: ImmutableList<org.onekash.kashcal.domain.whatsnew.ReleaseNote> = persistentListOf(),
+    // === TASK SHEETS ===
+    /** Whether the task form sheet shows (create when [taskFormEditTaskId] is null). */
+    val taskFormVisible: Boolean = false,
+    /** The task open in the task form; null when the form creates a new task. */
+    val taskFormEditTaskId: Long? = null,
+    /** The task shown in the task quick view; null while the sheet is closed. */
+    val taskQuickViewTaskId: Long? = null,
     /** Whether the app info sheet shows. */
     val showAppInfoSheet: Boolean = false,
     /** Whether the share-availability sheet shows. */
@@ -195,6 +219,12 @@ data class HomeUiState(
     val recentChangesClearedIds: ImmutableList<Long> = persistentListOf(),
     /** Current calendar view. */
     val viewMode: ViewMode = ViewMode.MONTH,
+    /**
+     * Calendar views the picker and drawer list, in the Views settings' order, hidden views
+     * removed. Defaults to the ViewMode declaration order minus the drawer-only views until
+     * [org.onekash.kashcal.data.preferences.KashCalDataStore.visibleViewsOrder] emits.
+     */
+    val visibleViews: ImmutableList<ViewMode> = DEFAULT_VISIBLE_VIEWS,
     /**
      * Last view other than INSIGHTS, where back from Insights returns. Seeded from the persisted
      * default view. Never holds INSIGHTS: [HomeViewModel.setViewMode] skips it.

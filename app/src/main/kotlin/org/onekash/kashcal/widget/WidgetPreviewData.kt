@@ -154,6 +154,45 @@ internal object WidgetPreviewData {
             }
     }
 
+    /**
+     * Returns sample open tasks for the Tasks widget and the Upcoming widget's tasks section: an
+     * overdue one, one due today (all-day) and one due tomorrow, so the preview shows the due
+     * text's three shapes.
+     */
+    fun tasks(context: Context): List<WidgetDataRepository.WidgetTask> {
+        val today = LocalDate.now()
+        val zone = ZoneId.systemDefault()
+
+        val yesterday = today.minusDays(1)
+        val tomorrow = today.plusDays(1)
+        return listOf(
+            WidgetDataRepository.WidgetTask(
+                taskId = 1,
+                title = context.getString(R.string.widget_preview_event_review),
+                whenTs = yesterday.atTime(17, 0).atZone(zone).toInstant().toEpochMilli(),
+                isAllDay = false,
+                dayCode = dayCodeOf(yesterday),
+                priority = 1
+            ),
+            WidgetDataRepository.WidgetTask(
+                taskId = 2,
+                title = context.getString(R.string.widget_preview_event_lunch),
+                whenTs = today.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli(),
+                isAllDay = true,
+                dayCode = dayCodeOf(today),
+                priority = 0
+            ),
+            WidgetDataRepository.WidgetTask(
+                taskId = 3,
+                title = context.getString(R.string.widget_preview_event_call),
+                whenTs = tomorrow.atTime(11, 0).atZone(zone).toInstant().toEpochMilli(),
+                isAllDay = false,
+                dayCode = dayCodeOf(tomorrow),
+                priority = 5
+            )
+        )
+    }
+
     private data class Sample(
         @StringRes val titleRes: Int,
         val hour: Int,

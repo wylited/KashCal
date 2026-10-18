@@ -2253,6 +2253,7 @@ class MigrationTest {
         assertTrue(columnExists("tasks", "percent_complete"))
         assertTrue(columnExists("tasks", "unknown_lines"))
         assertTrue(columnExists("pending_task_operations", "next_retry_at"))
+        assertTrue(columnExists("pending_task_operations", "source_calendar_id"))
         db.query(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tasks'"
         ).use { c ->

@@ -16,18 +16,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Contacts
+import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,7 +48,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.PersistentSet
@@ -58,14 +65,16 @@ import org.onekash.kashcal.ui.viewmodels.ViewMode
  * Shows the navigation drawer: view-mode switching and calendar visibility.
  *
  * From the top:
- * - the "KashCal" branding header, then Insights and a compact row per view mode, each
- *   showing its selected state
- * - Room calendars grouped by account, with leading checkboxes, except the Offline account
+ * - the "KashCal" branding header, then Insights and a compact row per view mode (from
+ *   [viewOptions], the Views settings' order minus hidden views), each showing its selected
+ *   state
+ * - Room calendars grouped by account, with leading checkboxes, except the Offline account;
+ *   each Room row also carries the agenda-eye toggle for the Agenda/Tasks visibility split
  * - birthday and anniversary calendars under one "Contacts" header
  * - device calendars grouped by account, only when the feature is enabled and at least one
  *   device calendar is enabled
- * - the Offline account ([AccountProvider.LOCAL]), KashCal's own calendars, under a header of its
- *   own
+ * - the Offline account ([AccountProvider.LOCAL]), KashCal's own calendars, under a header of
+ *   its own
  * - Settings and the Feedback link
  */
 @Composable
@@ -81,7 +90,15 @@ fun CalendarDrawer(
     onToggleCalendar: (Long) -> Unit,
     onToggleDeviceCalendarVisibility: (Long) -> Unit,
     onSettingsClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    viewOptions: List<ViewOption> = defaultViewOptions,
+    /**
+     * Flips a Room calendar's Agenda/Tasks visibility (`Calendar.isAgendaVisible`). Null — the
+     * default, until the host wires it — leaves the eye button off the rows entirely, since a
+     * visible control that does nothing is worse than none. Device calendars have no split, so
+     * their rows never show it either way.
+     */
+    onAgendaVisibilityToggle: ((Long) -> Unit)? = null
 ) {
     val (regularGroups, contactsGroups, offlineGroups) = remember(calendarGroups) {
         calendarGroups.toDisplaySections()
@@ -157,7 +174,7 @@ fun CalendarDrawer(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Contacts,
+                        imageVector = Icons.Filled.Contacts,
                         contentDescription = null,
                         tint = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer
                         else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -260,7 +277,11 @@ fun CalendarDrawer(
                             color = Color(calendar.color),
                             checked = calendar.isVisible,
                             onClick = { onToggleCalendar(calendar.id) },
-                            muted = calendar.isNotificationMuted
+                            muted = calendar.isNotificationMuted,
+                            agendaVisible = calendar.isAgendaVisible,
+                            onAgendaVisibilityClick = onAgendaVisibilityToggle?.let { toggle ->
+                                { toggle(calendar.id) }
+                            }
                         )
                     }
                 }
@@ -291,7 +312,11 @@ fun CalendarDrawer(
                             color = Color(calendar.color),
                             checked = calendar.isVisible,
                             onClick = { onToggleCalendar(calendar.id) },
-                            muted = calendar.isNotificationMuted
+                            muted = calendar.isNotificationMuted,
+                            agendaVisible = calendar.isAgendaVisible,
+                            onAgendaVisibilityClick = onAgendaVisibilityToggle?.let { toggle ->
+                                { toggle(calendar.id) }
+                            }
                         )
                     }
                 }
@@ -371,7 +396,11 @@ fun CalendarDrawer(
                         color = Color(calendar.color),
                         checked = calendar.isVisible,
                         onClick = { onToggleCalendar(calendar.id) },
-                        muted = calendar.isNotificationMuted
+                        muted = calendar.isNotificationMuted,
+                        agendaVisible = calendar.isAgendaVisible,
+                        onAgendaVisibilityClick = onAgendaVisibilityToggle?.let { toggle ->
+                            { toggle(calendar.id) }
+                        }
                     )
                 }
             }
@@ -449,6 +478,12 @@ internal const val DRAWER_CALENDARS_DIVIDER_TAG = "drawer_calendars_divider"
  * One calendar in the drawer: a tap shows or hides it. When [muted] a bell-off mark follows the
  * name. The mark is not a control: TalkBack hears "notifications off" as the row's state
  * description, after the name, so the name stays what it reads first.
+ *
+ * Room calendars additionally get the agenda-eye: [onAgendaVisibilityClick], when wired,
+ * renders a trailing [Icons.Default.Visibility] toggle for the Agenda/Tasks split
+ * ([Calendar.isAgendaVisible]) — [VisibilityOff] and a struck-through name when the calendar is
+ * out of the Agenda. Left null the row keeps its single-visibility shape; device calendar rows
+ * are always passed null, since they have no Agenda split.
  */
 @Composable
 internal fun CalendarCheckboxRow(
@@ -458,6 +493,8 @@ internal fun CalendarCheckboxRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     muted: Boolean = false,
+    agendaVisible: Boolean = true,
+    onAgendaVisibilityClick: (() -> Unit)? = null
 ) {
     val notificationsOff = stringResource(R.string.cd_notifications_off)
     Row(
@@ -486,6 +523,11 @@ internal fun CalendarCheckboxRow(
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textDecoration = if (onAgendaVisibilityClick != null && !agendaVisible) {
+                TextDecoration.LineThrough
+            } else {
+                null
+            },
             modifier = Modifier.weight(1f)
         )
         if (muted) {
@@ -495,6 +537,28 @@ internal fun CalendarCheckboxRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp).testTag(CALENDAR_ROW_MUTED_ICON_TAG)
             )
+        }
+        if (onAgendaVisibilityClick != null) {
+            CompositionLocalProvider(
+                LocalMinimumInteractiveComponentSize provides Dp.Unspecified
+            ) {
+                IconButton(onClick = onAgendaVisibilityClick) {
+                    Icon(
+                        imageVector = if (agendaVisible) {
+                            Icons.Default.Visibility
+                        } else {
+                            Icons.Default.VisibilityOff
+                        },
+                        contentDescription = stringResource(R.string.cd_calendar_agenda_visibility),
+                        tint = if (agendaVisible) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.outline
+                        },
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
         }
     }
 }

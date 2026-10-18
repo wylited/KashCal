@@ -277,6 +277,93 @@ class UpcomingWidgetContentTest {
         assertEquals("Footer itemId should be Long.MAX_VALUE", Long.MAX_VALUE, footer.itemId)
     }
 
+    // ==================== tasks section ====================
+
+    private fun makeTask(
+        taskId: Long = 1L,
+        title: String = "Task",
+        whenTs: Long? = 1000L,
+        isAllDay: Boolean = false,
+        dayCode: Int = 20260428
+    ) = WidgetDataRepository.WidgetTask(
+        taskId = taskId,
+        title = title,
+        whenTs = whenTs,
+        isAllDay = isAllDay,
+        dayCode = dayCode
+    )
+
+    @Test
+    fun `buildFlatUpcomingItems appends the tasks section after the events`() {
+        val items = buildFlatUpcomingItems(
+            mapOf(20260428 to listOf(makeEvent(eventId = 1))),
+            openTasks = listOf(makeTask(taskId = 1, title = "First"), makeTask(taskId = 2, title = "Second"))
+        )
+
+        assertTrue(items[0] is UpcomingWidgetItem.Header)
+        assertTrue(items[1] is UpcomingWidgetItem.Event)
+        assertTrue(items[2] is UpcomingWidgetItem.TasksHeader)
+        assertEquals(
+            listOf("First", "Second"),
+            items.filterIsInstance<UpcomingWidgetItem.Task>().map { it.task.title }
+        )
+    }
+
+    @Test
+    fun `buildFlatUpcomingItems emits the tasks section alone when no events remain`() {
+        val items = buildFlatUpcomingItems(
+            mapOf(20260428 to listOf(makeEvent(eventId = 1, isPast = true))),
+            openTasks = listOf(makeTask(taskId = 1))
+        )
+
+        assertEquals(2, items.size)
+        assertTrue(items[0] is UpcomingWidgetItem.TasksHeader)
+        assertTrue(items[1] is UpcomingWidgetItem.Task)
+    }
+
+    @Test
+    fun `buildFlatUpcomingItems drops the tasks section when the cap is full`() {
+        // 10 days of (1 header + 9 events) = 100 items: the cap is exhausted, and the header
+        // plus at least one task can no longer fit, so the whole section stays off.
+        val items = buildFlatUpcomingItems(
+            denseDays(dayCount = 10, eventsPerDay = 9),
+            openTasks = listOf(makeTask(taskId = 1))
+        )
+
+        assertEquals(100, items.size)
+        assertTrue(items.none { it is UpcomingWidgetItem.TasksHeader })
+        assertTrue(items.none { it is UpcomingWidgetItem.Task })
+    }
+
+    @Test
+    fun `buildFlatUpcomingItems keeps the footer trailing behind the tasks section`() {
+        // Day 13 is the first to overflow (12 kept days × 8 items = 96; +8 would pass the cap),
+        // so the footer's slot is reserved; 2 slots still leave room for the tasks header plus
+        // one task, which must sit before the trailing footer.
+        val items = buildFlatUpcomingItems(
+            denseDays(dayCount = 13, eventsPerDay = 7),
+            openTasks = listOf(makeTask(taskId = 1))
+        )
+
+        assertEquals(UpcomingWidgetItem.Footer::class, items.last()::class)
+        assertTrue(items.dropLast(1).any { it is UpcomingWidgetItem.Task })
+        assertTrue(
+            items.indexOfFirst { it is UpcomingWidgetItem.Task } <
+                items.indexOfFirst { it is UpcomingWidgetItem.Footer }
+        )
+    }
+
+    @Test
+    fun `buildFlatUpcomingItems keeps task itemIds unique against event items`() {
+        val items = buildFlatUpcomingItems(
+            mapOf(20260428 to listOf(makeEvent(eventId = 1))),
+            openTasks = listOf(makeTask(taskId = 1), makeTask(taskId = 2))
+        )
+
+        val ids = items.map { it.itemId }
+        assertEquals("All itemIds must be unique", ids.size, ids.toSet().size)
+    }
+
     @Test
     fun `footerActionParameters returns ACTION_GO_TO_TODAY`() {
         val params = footerActionParameters()

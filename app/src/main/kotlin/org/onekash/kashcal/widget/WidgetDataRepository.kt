@@ -2,26 +2,35 @@ package org.onekash.kashcal.widget
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import org.onekash.kashcal.data.contacts.ContactEventTitleFormatter
+import org.onekash.kashcal.data.db.entity.SyncStatus
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
+import org.onekash.kashcal.domain.model.VisibilityDomain
 import org.onekash.kashcal.domain.reader.DisplayEventRepository
+import org.onekash.kashcal.domain.reader.TaskReader
 import org.onekash.kashcal.util.DateTimeUtils
 import java.time.LocalDate
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Reads events for the Agenda, Week, Month and Upcoming widgets from visible calendars, Room and
- * device calendars merged by [DisplayEventRepository].
+ * Reads events and tasks for the Agenda, Week, Month, Upcoming and Tasks widgets. Events come
+ * from visible calendars, Room and device calendars merged by [DisplayEventRepository]; tasks
+ * come from [TaskReader] in the schedule visibility domain — widgets follow
+ * [VisibilityDomain.SCHEDULE], per its KDoc.
  *
  * Every method sorts a day's events all-day first, then by start time, and marks past events
  * ([WidgetEvent.isPast]): Agenda and Week rows render them grayed and struck through, and the
- * Upcoming widget hides them.
+ * Upcoming widget hides them. Task methods sort by `due ?? dtstart` with undated last.
  */
 @Singleton
 class WidgetDataRepository @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val displayEventRepository: DisplayEventRepository
+    private val displayEventRepository: DisplayEventRepository,
+    private val taskReader: TaskReader
 ) {
     /** One event occurrence as a widget renders it. */
     data class WidgetEvent(
@@ -45,6 +54,24 @@ class WidgetDataRepository @Inject constructor(
         /** Stable identity across the day buckets the event appears in (for span dedup). */
         val spanKey: String get() = "$eventId:$occurrenceStartTs"
     }
+
+    /**
+     * One open task as a widget renders it, placed at `due ?? dtstart`. A task without either
+     * date has [whenTs] and [dayCode] null/0 and only the Upcoming and Tasks widgets list it,
+     * as their undated tail.
+     */
+    data class WidgetTask(
+        val taskId: Long,
+        val title: String,
+        /** `dueTs ?: dtStartTs`, epoch millis; null when the task has neither. */
+        val whenTs: Long?,
+        /** Whether the due date is a DATE (all-day); a dtstart-placed task is treated as timed. */
+        val isAllDay: Boolean,
+        /** YYYYMMDD day code of [whenTs]; 0 when undated. */
+        val dayCode: Int,
+        /** RFC 5545 PRIORITY, 0 undefined. Only a stable-order tiebreak today. */
+        val priority: Int = 0
+    )
 
     /** Returns today's events, for the Agenda widget. */
     suspend fun getTodayEvents(): List<WidgetEvent> {
@@ -96,6 +123,72 @@ class WidgetDataRepository @Inject constructor(
                 .map { toWidgetEvent(it) }
                 .sortedWith(compareBy({ !it.isAllDay }, { it.startTs }))
         }
+    }
+
+    /**
+     * Observes every task of schedule-visible calendars, unordered beyond the DAO's own
+     * ordering. The Flow half of the events' Flow + suspend-snapshot pair; nothing observes it
+     * yet, but widgets that gain live data read through it.
+     */
+    fun observeTasksForWidget(): Flow<List<Task>> = taskReader.observeTasks(VisibilityDomain.SCHEDULE)
+
+    /**
+     * Returns up to [limit] open tasks — [Task.isOpen], no PENDING_DELETE rows — of
+     * schedule-visible calendars for the Tasks and Upcoming widgets: due or starting first,
+     * undated last, priority and then title breaking ties so the order is stable.
+     */
+    suspend fun getOpenTasks(limit: Int): List<WidgetTask> {
+        if (limit <= 0) return emptyList()
+        return taskReader.observeTasks(VisibilityDomain.SCHEDULE).first()
+            .asSequence()
+            .filter { it.isOpen && it.syncStatus != SyncStatus.PENDING_DELETE }
+            .map { toWidgetTask(it) }
+            .sortedWith(
+                compareBy(
+                    { it.whenTs == null },
+                    { it.whenTs },
+                    { it.priority },
+                    { it.title.lowercase() }
+                )
+            )
+            .take(limit)
+            .toList()
+    }
+
+    /**
+     * Returns the open tasks on today or overdue, for the Agenda widget: a task stands in its
+     * due (or dtstart) day, and an open task whose day has passed still claims today's list
+     * until it is done, as the in-app agenda does. Undated tasks never appear here.
+     */
+    suspend fun getTodayTasks(): List<WidgetTask> {
+        val todayCode = DateTimeUtils.eventTsToDayCode(System.currentTimeMillis(), isAllDay = false)
+        return taskReader.observeTasks(VisibilityDomain.SCHEDULE).first()
+            .asSequence()
+            .filter { it.isOpen && it.syncStatus != SyncStatus.PENDING_DELETE }
+            .map { toWidgetTask(it) }
+            .filter { it.dayCode in 1..todayCode }
+            .sortedWith(
+                compareBy(
+                    { it.whenTs },
+                    { it.priority },
+                    { it.title.lowercase() }
+                )
+            )
+            .toList()
+    }
+
+    /** Maps a [Task] to a [WidgetTask]; the day code follows the all-day flag, as events do. */
+    private fun toWidgetTask(task: Task): WidgetTask {
+        val whenTs = task.whenTs
+        val isAllDay = task.dueTs != null && task.dueIsAllDay
+        return WidgetTask(
+            taskId = task.id,
+            title = task.summary,
+            whenTs = whenTs,
+            isAllDay = isAllDay,
+            dayCode = whenTs?.let { DateTimeUtils.eventTsToDayCode(it, isAllDay) } ?: 0,
+            priority = task.priority
+        )
     }
 
     /**

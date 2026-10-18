@@ -60,7 +60,8 @@ internal object WidgetPreviewRegistrar {
         WeekWidgetReceiver::class,
         MonthWidgetReceiver::class,
         DateWidgetReceiver::class,
-        UpcomingWidgetReceiver::class
+        UpcomingWidgetReceiver::class,
+        TasksWidgetReceiver::class
     )
 
     /**

@@ -1,0 +1,223 @@
+package org.onekash.kashcal.domain.task
+
+import org.onekash.kashcal.data.db.KashCalDatabase
+import org.onekash.kashcal.data.db.entity.Calendar
+import org.onekash.kashcal.data.db.entity.PendingTaskOperation
+import org.onekash.kashcal.data.db.entity.SyncStatus
+import org.onekash.kashcal.data.db.entity.Task
+import org.onekash.kashcal.data.repository.AccountRepository
+import org.onekash.kashcal.domain.model.AccountProvider
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * Writes tasks and queues their sync operations, the task counterpart of [EventWriter]'s
+ * offline-first discipline: every write lands in Room at once and reaches the server when the
+ * next sync pushes [PendingTaskOperation]s.
+ *
+ * One exception to the queue: a task of the on-device [AccountProvider.LOCAL] account has no
+ * server to reach, so its rows are marked SYNCED and no operation is queued — the push would
+ * otherwise never drain it, because local accounts are never synced.
+ */
+@Singleton
+class TaskRepository @Inject constructor(
+    private val database: KashCalDatabase,
+    private val accountRepository: AccountRepository
+) {
+    private val tasksDao by lazy { database.tasksDao() }
+    private val pendingTaskOperationsDao by lazy { database.pendingTaskOperationsDao() }
+    private val calendarsDao by lazy { database.calendarsDao() }
+
+    /**
+     * Inserts [task] and returns the saved row. A blank UID is generated; a task of a server
+     * calendar is marked PENDING_CREATE with a queued CREATE operation, a local-account task
+     * is SYNCED with none.
+     */
+    suspend fun create(task: Task): Task = database.runInTransaction {
+        val now = System.currentTimeMillis()
+        val isLocal = isLocalCalendar(calendarsDao.getById(task.calendarId))
+        val row = task.copy(
+            uid = task.uid.ifBlank { generateUid() },
+            syncStatus = if (isLocal) SyncStatus.SYNCED else SyncStatus.PENDING_CREATE,
+            // Stamped here, never taken from the caller: a stale UI copy must not plant an
+            // old value.
+            localModifiedAt = now,
+            updatedAt = now
+        )
+        val saved = row.copy(id = tasksDao.insert(row))
+        if (!isLocal) {
+            queueOperation(saved, PendingTaskOperation.OPERATION_CREATE)
+        }
+        saved
+    }
+
+    /**
+     * Persists [task]'s edit and returns the saved row. A task whose stored row has a server
+     * URL queues UPDATE and is marked PENDING_UPDATE; one the server has never seen re-types
+     * its queued operation to CREATE and stays PENDING_CREATE, so the push uploads the whole
+     * task instead of patching nothing. The URL is typed off the stored row, not the
+     * argument, so a stale UI copy can't drop a live URL and duplicate the server resource.
+     * A local-account task is SYNCED with no operation.
+     */
+    suspend fun update(task: Task): Task = database.runInTransaction {
+        val now = System.currentTimeMillis()
+        val existing = tasksDao.getById(task.id) ?: return@runInTransaction task
+        val isLocal = isLocalCalendar(calendarsDao.getById(task.calendarId))
+        val neverOnServer = existing.caldavUrl == null
+        val row = task.copy(
+            caldavUrl = task.caldavUrl ?: existing.caldavUrl,
+            syncStatus = when {
+                isLocal -> SyncStatus.SYNCED
+                neverOnServer -> SyncStatus.PENDING_CREATE
+                else -> SyncStatus.PENDING_UPDATE
+            },
+            localModifiedAt = now,
+            updatedAt = now
+        )
+        tasksDao.update(row)
+        if (!isLocal) {
+            queueOperation(
+                row,
+                if (neverOnServer) PendingTaskOperation.OPERATION_CREATE else PendingTaskOperation.OPERATION_UPDATE
+            )
+        }
+        row
+    }
+
+    /**
+     * Deletes [task]. A task with a server resource is soft-deleted (PENDING_DELETE) with a
+     * queued DELETE carrying [Task.caldavUrl] as the operation's target URL, so the push
+     * removes the server copy and the row disappears with it. A task that never reached the
+     * server, or one of a local account, is torn down at once: its row and queued operations
+     * are gone when this returns.
+     */
+    suspend fun delete(task: Task) = database.runInTransaction {
+        val isLocal = isLocalCalendar(calendarsDao.getById(task.calendarId))
+        if (isLocal || task.caldavUrl == null) {
+            pendingTaskOperationsDao.deleteForTask(task.id)
+            tasksDao.deleteById(task.id)
+        } else {
+            tasksDao.markForDeletion(task.id, System.currentTimeMillis())
+            queueOperation(
+                task,
+                PendingTaskOperation.OPERATION_DELETE,
+                targetUrl = task.caldavUrl
+            )
+        }
+    }
+
+    /**
+     * Moves [task] into [targetCalendarId] and returns the moved row, queueing one MOVE
+     * operation that the push resolves as CREATE into the target calendar followed by DELETE
+     * of the source resource (CalDAV has no MOVE method for the fallback path events use).
+     * The operation carries the source calendar id, so the source calendar's push still
+     * drains it once the row's `calendarId` names the target — a MOVE whose target never
+     * syncs (the local account, say) is otherwise undrainable. The moved row keeps
+     * [Task.caldavUrl] until the push rewrites it, and is PENDING_UPDATE until then so the
+     * source calendar's pull can't re-ingest the resource mid-move.
+     *
+     * The move is refused when the target is read-only or belongs to another account; tasks
+     * have no attendees, so events' invitation misdelivery concern doesn't apply here. Both
+     * calendars are loaded fresh, so a stale caller copy can't smuggle a target past the
+     * checks.
+     *
+     * A move between two calendars of the local account queues nothing.
+     */
+    suspend fun move(task: Task, targetCalendarId: Long): Task = database.runInTransaction {
+        val now = System.currentTimeMillis()
+        val source = requireNotNull(calendarsDao.getById(task.calendarId)) {
+            "Source calendar not found: ${task.calendarId}"
+        }
+        val target = requireNotNull(calendarsDao.getById(targetCalendarId)) {
+            "Target calendar not found: $targetCalendarId"
+        }
+
+        // The event form also leaves read-only calendars out of its picker.
+        require(!target.isReadOnly) {
+            "Cannot move a task to a read-only calendar"
+        }
+        require(source.accountId == target.accountId) {
+            "Cannot move a task to a calendar of a different account " +
+                "(source ${source.accountId}, target ${target.accountId})"
+        }
+
+        val bothLocal = isLocalCalendar(target) && isLocalCalendar(source)
+        val moved = task.copy(
+            calendarId = targetCalendarId,
+            syncStatus = if (bothLocal) SyncStatus.SYNCED else SyncStatus.PENDING_UPDATE,
+            localModifiedAt = now,
+            updatedAt = now
+        )
+        tasksDao.update(moved)
+        if (!bothLocal) {
+            queueOperation(
+                moved,
+                PendingTaskOperation.OPERATION_MOVE,
+                targetUrl = task.caldavUrl,
+                targetCalendarId = targetCalendarId,
+                sourceCalendarId = source.id
+            )
+        }
+        moved
+    }
+
+    /**
+     * Completes or reopens [task] and returns the saved row, keeping the completion triple
+     * consistent (wycal's law): STATUS:COMPLETED, COMPLETED and PERCENT-COMPLETE:100 are
+     * written together, and reopening clears all three at once. CANCELLED counts as open, so
+     * toggling it completes it. The status change rides [update]'s queue path.
+     */
+    suspend fun toggleDone(task: Task): Task {
+        val now = System.currentTimeMillis()
+        val toggled = if (task.isDone) {
+            task.copy(
+                status = Task.STATUS_NEEDS_ACTION,
+                completedTs = null,
+                percentComplete = null
+            )
+        } else {
+            task.copy(
+                status = Task.STATUS_COMPLETED,
+                completedTs = now,
+                percentComplete = 100
+            )
+        }
+        return update(toggled)
+    }
+
+    /**
+     * Replaces [task]'s CREATE, UPDATE and MOVE operations with one fresh [operation]: an
+     * older op's payload is superseded by the row's current state, so only the newest intent
+     * is pushed. A queued DELETE survives [deleteNonDeleteOpsForTask], so an edit can't
+     * resurrect a task already being torn down.
+     */
+    private suspend fun queueOperation(
+        task: Task,
+        operation: String,
+        targetUrl: String? = null,
+        targetCalendarId: Long? = null,
+        sourceCalendarId: Long? = null
+    ) {
+        pendingTaskOperationsDao.deleteNonDeleteOpsForTask(task.id)
+        pendingTaskOperationsDao.insert(
+            PendingTaskOperation(
+                taskId = task.id,
+                operation = operation,
+                targetUrl = targetUrl,
+                targetCalendarId = targetCalendarId,
+                sourceCalendarId = sourceCalendarId
+            )
+        )
+    }
+
+    /** True when [calendar] belongs to the on-device [AccountProvider.LOCAL] account. */
+    private suspend fun isLocalCalendar(calendar: Calendar?): Boolean {
+        if (calendar == null) return false
+        val account = accountRepository.getAccountById(calendar.accountId) ?: return false
+        return account.provider == AccountProvider.LOCAL
+    }
+
+    /** Mirrors [EventWriter]'s UID scheme, so tasks and events share one namespace shape. */
+    private fun generateUid(): String = "${UUID.randomUUID()}@kashcal.onekash.org"
+}

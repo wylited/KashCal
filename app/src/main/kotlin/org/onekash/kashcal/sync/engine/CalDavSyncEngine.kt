@@ -24,6 +24,7 @@ import org.onekash.kashcal.sync.strategy.PullResult
 import org.onekash.kashcal.sync.strategy.PullStrategy
 import org.onekash.kashcal.sync.strategy.PushResult
 import org.onekash.kashcal.sync.strategy.PushStrategy
+import org.onekash.kashcal.sync.strategy.TaskPushStrategy
 import org.onekash.kashcal.util.maskEmail
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,6 +44,7 @@ import javax.inject.Singleton
 class CalDavSyncEngine @Inject constructor(
     private val pullStrategy: PullStrategy,
     private val pushStrategy: PushStrategy,
+    private val taskPushStrategy: TaskPushStrategy,
     private val conflictResolver: ConflictResolver,
     private val calendarRepository: CalendarRepository,
     private val eventsDao: EventsDao,
@@ -95,6 +97,8 @@ class CalDavSyncEngine @Inject constructor(
         var pullUpdated = 0
         var pullDeleted = 0
         var conflictsResolved = 0
+        // Tasks pushed this cycle, which the task pull keeps over a possibly stale read.
+        var pushedTaskIds: Set<Long> = emptySet()
         val errors = mutableListOf<SyncError>()
         val changes = mutableListOf<SyncChange>()
         var anyConflictsAbandoned = false
@@ -175,6 +179,18 @@ class CalDavSyncEngine @Inject constructor(
                 }
             }
 
+            // Step 1c: push the calendar's task changes. Tasks ride the same session, and
+            // their counts fold into the event totals; failures are per-operation warnings,
+            // never a sync error.
+            if (calendar.supportsVTodo) {
+                val taskPush = taskPushStrategy.pushForCalendar(calendar, client)
+                pushedTaskIds = taskPush.pushedTaskIds
+                pushCreated += taskPush.created
+                pushUpdated += taskPush.updated
+                pushDeleted += taskPush.deleted
+                taskPush.warnings.forEach { sessionBuilder.addWarning(it) }
+            }
+
             // Recorded whatever the push result.
             sessionBuilder.setPushStats(pushCreated, pushUpdated, pushDeleted)
 
@@ -186,11 +202,13 @@ class CalDavSyncEngine @Inject constructor(
                 calendar
             }
             // The pull skips just-pushed events so a stale CDN read can't overwrite them, except
-            // those whose write carried a server change their rows lack.
+            // those whose write carried a server change their rows lack. The task ids ride
+            // along for the pull's mixed-resource task pass, same stale-read guard.
             val pushed = pushResult as? PushResult.Success
             val pullResult = pullStrategy.pull(calendarForPull, forceFullSync, quirks, client, sessionBuilder,
                 recentlyPushedEventIds = pushed?.pushedEventIds.orEmpty(),
-                refetchEventIds = pushed?.refetchEventIds.orEmpty())
+                refetchEventIds = pushed?.refetchEventIds.orEmpty(),
+                recentlyPushedTaskIds = pushedTaskIds)
 
             when (pullResult) {
                 is PullResult.Success -> {
@@ -225,6 +243,23 @@ class CalDavSyncEngine @Inject constructor(
                         )
                     }
                 }
+            }
+
+            // Step 3b: pull server tasks. The event pull's listings filter on VEVENT, so
+            // tasks need this second pass over the same collection; its counts fold into the
+            // event totals.
+            if (calendar.supportsVTodo) {
+                val taskPull = pullStrategy.pullTasks(
+                    calendarForPull, quirks, client, sessionBuilder, pushedTaskIds
+                )
+                pullAdded += taskPull.added
+                pullUpdated += taskPull.updated
+                pullDeleted += taskPull.deleted
+                sessionBuilder.addDeleted(taskPull.deleted)
+                Log.d(
+                    TAG,
+                    "Task pull: added=${taskPull.added}, updated=${taskPull.updated}, deleted=${taskPull.deleted}"
+                )
             }
 
             val session = sessionBuilder.build()

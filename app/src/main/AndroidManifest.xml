@@ -956,6 +956,19 @@
                 android:resource="@xml/upcoming_widget_info" />
         </receiver>
 
+        <!-- Tasks widget receiver (open tasks list) -->
+        <receiver
+            android:name=".widget.TasksWidgetReceiver"
+            android:exported="true"
+            android:label="@string/view_tasks">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/tasks_widget_info" />
+        </receiver>
+
         <!-- Account authenticator for CalendarProvider registration.
              Registers org.onekash.kashcal account type with Android.
              exported="false" — only the system account framework binds to this. -->

@@ -47,6 +47,9 @@ import kotlinx.coroutines.withContext
 import org.onekash.kashcal.R
 import org.onekash.kashcal.data.db.entity.Event
 import org.onekash.kashcal.data.db.entity.Occurrence
+import org.onekash.kashcal.data.db.entity.Task
+import org.onekash.kashcal.ui.components.TaskFormState
+import org.onekash.kashcal.ui.components.toDueFields
 import org.onekash.kashcal.data.preferences.DefaultCalendar
 import org.onekash.kashcal.data.contacts.ContactEventUtils
 import org.onekash.kashcal.data.preferences.KashCalDataStore
@@ -69,6 +72,7 @@ import org.onekash.kashcal.domain.planner.clampPlannerZoom
 import org.onekash.kashcal.ui.util.plannerPageForDate
 import org.onekash.kashcal.ui.util.plannerWeekStart
 import org.onekash.kashcal.domain.model.SearchResult
+import org.onekash.kashcal.domain.model.VisibilityDomain
 import org.onekash.kashcal.domain.model.toEventForDuplicate
 import org.onekash.kashcal.domain.reader.DeviceEventReader
 import org.onekash.kashcal.domain.reader.DisplayEventRepository
@@ -220,6 +224,9 @@ class HomeViewModel(
     private val deviceEventWriter: DeviceEventWriter,
     private val attendeeBackfill: org.onekash.kashcal.domain.reader.AttendeeBackfill,
     private val contactEmailReader: org.onekash.kashcal.data.contacts.ContactEmailReader,
+    private val taskReader: org.onekash.kashcal.domain.reader.TaskReader,
+    private val taskRepository: org.onekash.kashcal.domain.task.TaskRepository,
+    private val widgetUpdateManager: org.onekash.kashcal.widget.WidgetUpdateManager,
     private val context: Context,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
     private val currentDayCodeProvider: () -> Int
@@ -238,6 +245,9 @@ class HomeViewModel(
         deviceEventWriter: DeviceEventWriter,
         attendeeBackfill: org.onekash.kashcal.domain.reader.AttendeeBackfill,
         contactEmailReader: org.onekash.kashcal.data.contacts.ContactEmailReader,
+        taskReader: org.onekash.kashcal.domain.reader.TaskReader,
+        taskRepository: org.onekash.kashcal.domain.task.TaskRepository,
+        widgetUpdateManager: org.onekash.kashcal.widget.WidgetUpdateManager,
         @ApplicationContext context: Context,
         @IoDispatcher ioDispatcher: CoroutineDispatcher,
     ) : this(
@@ -252,6 +262,9 @@ class HomeViewModel(
         deviceEventWriter,
         attendeeBackfill,
         contactEmailReader,
+        taskReader,
+        taskRepository,
+        widgetUpdateManager,
         context,
         ioDispatcher,
         { DayPagerUtils.msToDayCode(System.currentTimeMillis()) }
@@ -418,6 +431,137 @@ class HomeViewModel(
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
+    // ===== Tasks =====
+
+    /**
+     * Every task of agenda-visible calendars, ordered by `due ?? dtstart`. The Tasks screen
+     * groups it through TasksListModel and the Agenda's task rows read the same source, so a
+     * sync or a local write shows in both without a manual reload.
+     */
+    val tasks: StateFlow<List<Task>> = taskReader
+        .observeTasks(VisibilityDomain.AGENDA)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val quickViewTaskId = MutableStateFlow<Long?>(null)
+
+    /**
+     * The active quick-view task, projected out of [tasks] so a toggle's new status or a
+     * background sync re-renders the sheet, and a deleted task closes it (null). The task twin
+     * of [quickViewEventLive].
+     */
+    val quickViewTaskLive: StateFlow<Task?> =
+        combine(quickViewTaskId, tasks) { id, list -> id?.let { activeId -> list.firstOrNull { it.id == activeId } } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** Opens the task form: creation when [taskId] is null, that task's edit otherwise. */
+    fun showTaskForm(taskId: Long? = null) {
+        _uiState.update { it.copy(taskFormVisible = true, taskFormEditTaskId = taskId) }
+    }
+
+    /** Closes the task form and drops its edit target. */
+    fun dismissTaskForm() {
+        _uiState.update { it.copy(taskFormVisible = false, taskFormEditTaskId = null) }
+    }
+
+    fun showTaskQuickView(taskId: Long) {
+        quickViewTaskId.value = taskId
+        _uiState.update { it.copy(taskQuickViewTaskId = taskId) }
+    }
+
+    fun dismissTaskQuickView() {
+        quickViewTaskId.value = null
+        _uiState.update { it.copy(taskQuickViewTaskId = null) }
+    }
+
+    /** Loads the task the form edits; the host fetches it once when the sheet opens. */
+    suspend fun getTaskForEdit(taskId: Long): Task? = withContext(ioDispatcher) {
+        taskReader.getTaskById(taskId)
+    }
+
+    /**
+     * Completes or reopens [task] — the STATUS, COMPLETED and PERCENT-COMPLETE triple-write —
+     * then refreshes the widgets, whose task lists read the same rows. A failure shows a
+     * snackbar; the list re-renders from Room either way.
+     */
+    fun toggleTaskDone(task: Task) {
+        viewModelScope.launch {
+            try {
+                withContext(ioDispatcher) { taskRepository.toggleDone(task) }
+                widgetUpdateManager.updateAllWidgets("task_changed")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Error toggling task ${task.id}", e)
+                showSnackbar("Failed to update task: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Deletes [task] without waiting, so the quick view or form can close at once; a server
+     * task is soft-deleted until the push removes it. A failure shows a snackbar.
+     */
+    fun deleteTask(task: Task) {
+        viewModelScope.launch {
+            try {
+                withContext(ioDispatcher) { taskRepository.delete(task) }
+                Log.d(TAG, "Task deleted: ${task.id}")
+                widgetUpdateManager.updateAllWidgets("task_changed")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Error deleting task ${task.id}", e)
+                showSnackbar("Failed to delete: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Persists the task form: a create or a whole-task update, with a calendar change applied
+     * after the field write so the queued MOVE supersedes the UPDATE (the push then creates in
+     * the target calendar and deletes the source resource, the row carrying its final fields).
+     * Returns the saved row; a failure leaves the form open for a retry.
+     */
+    suspend fun saveTask(formState: TaskFormState): Result<Task> = withContext(ioDispatcher) {
+        try {
+            val calendarId = formState.calendarId
+                ?: return@withContext Result.failure(IllegalStateException("No calendar selected"))
+            val (dueTs, dueTimezone, dueIsAllDay) = formState.toDueFields()
+            val existing = formState.editingTaskId?.let { taskReader.getTaskById(it) }
+
+            val row = (existing ?: Task(
+                // Blank: TaskRepository mints the @kashcal.onekash.org UID, so the form isn't a
+                // second minting authority.
+                uid = "",
+                calendarId = calendarId,
+                summary = formState.title.trim(),
+                dtstamp = System.currentTimeMillis(),
+            )).copy(
+                calendarId = calendarId,
+                summary = formState.title.trim(),
+                description = formState.notes.ifBlank { null },
+                dueTs = dueTs,
+                dueTimezone = dueTimezone,
+                dueIsAllDay = dueIsAllDay,
+                priority = formState.priority,
+            )
+
+            val saved = if (existing == null) {
+                taskRepository.create(row)
+            } else {
+                val updated = taskRepository.update(row)
+                if (calendarId != existing.calendarId) taskRepository.move(updated, calendarId) else updated
+            }
+            widgetUpdateManager.updateAllWidgets("task_changed")
+            Result.success(saved)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving task", e)
+            Result.failure(e)
+        }
+    }
+
     // Attendee chip surfaces.
 
     private val quickViewEventId = MutableStateFlow<Long?>(null)
@@ -553,6 +697,14 @@ class HomeViewModel(
      * Agenda events for the next [AGENDA_WINDOW_MS]: a loading state while the query runs, then
      * the merged Room and device list, or empty on an error. Re-emits while subscribed on the
      * same sources as [weekEvents].
+     *
+     * This is the one surface on the AGENDA visibility domain: Room events whose calendar the
+     * drawer's agenda-eye turned off (`Calendar.isAgendaVisible`) don't show here, even though
+     * they stay on the Month/Week grids. The filter mirrors [EventReader]'s own calendar
+     * visibility joins — combine with [EventReader.getVisibleCalendars] and filter by id — one
+     * level up, because the repository read the events in the SCHEDULE domain. Toggling the eye
+     * re-emits the calendars Flow, so an open agenda updates live. Device calendars have no
+     * agenda split in this pass, so their events pass through untouched.
      */
     @Suppress("OPT_IN_USAGE")
     val agendaEvents: StateFlow<AgendaUiState> =
@@ -561,8 +713,21 @@ class HomeViewModel(
                 if (range == null) {
                     flowOf(AgendaUiState.EMPTY)
                 } else {
-                    displayEventRepository.getDisplayEventsForRange(range.startMs, range.endMs)
-                        .map { events -> AgendaUiState(events = events, isLoading = false) }
+                    combine(
+                        displayEventRepository.getDisplayEventsForRange(range.startMs, range.endMs),
+                        eventReader.getVisibleCalendars(VisibilityDomain.AGENDA)
+                    ) { events, agendaVisibleCalendars ->
+                        val agendaVisibleIds = agendaVisibleCalendars.map { it.id }.toSet()
+                        AgendaUiState(
+                            events = events.filter { event ->
+                                when (event) {
+                                    is DisplayEvent.Room -> event.calendar?.id in agendaVisibleIds
+                                    is DisplayEvent.Device -> true
+                                }
+                            }.toPersistentList(),
+                            isLoading = false
+                        )
+                    }
                         .onStart { emit(AgendaUiState.LOADING) }
                         .catch { e ->
                             if (e is CancellationException) throw e
@@ -1165,6 +1330,18 @@ class HomeViewModel(
             }
         }
         viewModelScope.launch {
+            // The Views settings' order minus hidden views, as ViewMode for the picker and
+            // drawer. Unknown keys can't appear (the DataStore parse drops them).
+            combine(dataStore.visibleViewsOrder, dataStore.hiddenViews) { order, hidden ->
+                order.mapNotNull { key -> ViewMode.entries.firstOrNull { it.key == key } }
+                    .filterNot { it == ViewMode.INSIGHTS || it == ViewMode.CONTACTS }
+                    .filter { it.key !in hidden }
+                    .toPersistentList()
+            }.collect { visibleViews ->
+                _uiState.update { it.copy(visibleViews = visibleViews) }
+            }
+        }
+        viewModelScope.launch {
             eventReader.getRecentCategories().collect { tags ->
                 _uiState.update { it.copy(categorySuggestions = tags.toPersistentList()) }
             }
@@ -1460,6 +1637,39 @@ class HomeViewModel(
 
     // ==================== Calendar Visibility ====================
 
+    /**
+     * Commits the Views settings' new [order]: the visible views in their display order
+     * (hidden ones already removed by the caller). Persisted through
+     * [KashCalDataStore.setVisibleViews]; the hidden set is whatever valid key the list doesn't
+     * mention.
+     *
+     * A view the user is standing on can't stay current once hidden, so it moves to the first
+     * visible view; any other current view is left alone. When the persisted default view is
+     * among the now-hidden it is re-pointed at the first visible view, so the next cold start
+     * can't open a view the pickers no longer list.
+     */
+    fun setViewsOrder(order: List<ViewMode>) {
+        viewModelScope.launch {
+            dataStore.setVisibleViews(order.map { it.key })
+            val firstVisible = order.firstOrNull()
+
+            val current = _uiState.value.viewMode
+            val currentBecameHidden = current !in order &&
+                current != ViewMode.INSIGHTS && current != ViewMode.CONTACTS
+            if (firstVisible != null && currentBecameHidden) {
+                _uiState.update {
+                    it.copy(viewMode = firstVisible, previousNonInsightsMode = firstVisible)
+                }
+            }
+
+            if (firstVisible != null &&
+                ViewMode.fromKey(dataStore.getDefaultCalendarView()) !in order
+            ) {
+                dataStore.setDefaultCalendarView(firstVisible.key)
+            }
+        }
+    }
+
     /** Toggles a Room calendar's visibility, stored in Calendar.isVisible (the source of truth). */
     fun toggleCalendarVisibility(calendarId: Long) {
         viewModelScope.launch {
@@ -1472,6 +1682,20 @@ class HomeViewModel(
             // Only the dots need a rebuild: they come from a one-shot query, and the other
             // views follow the visibility through their Flows.
             buildEventDots(_uiState.value.viewingYear, _uiState.value.viewingMonth)
+        }
+    }
+
+    /**
+     * Toggles a Room calendar's Agenda/Tasks visibility (the drawer's agenda-eye, stored in
+     * Calendar.isAgendaVisible). Writes through [EventReader] rather than the coordinator —
+     * only the coordinator's own write paths live there; the agenda split is a plain column
+     * update. The agenda follows through its Flow, and no dot rebuild is needed: the grids are
+     * on the schedule domain.
+     */
+    fun toggleCalendarAgendaVisibility(calendarId: Long) {
+        viewModelScope.launch {
+            val calendar = _uiState.value.calendars.find { it.id == calendarId } ?: return@launch
+            eventReader.setCalendarAgendaVisibility(calendarId, !calendar.isAgendaVisible)
         }
     }
 

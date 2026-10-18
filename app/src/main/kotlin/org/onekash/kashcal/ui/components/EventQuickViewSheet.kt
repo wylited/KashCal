@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Share
@@ -90,6 +91,8 @@ import java.time.ZoneId
  * @param onDeleteSingle called at once for a recurring master (the host opens the scope sheet)
  *   and after the inline confirm for a one-off event or an exception.
  * @param onShareAsCard opens the share-as-card sheet from the top-right icon.
+ * @param onViewContact called with the contact's lookup key when the event is a birthday or
+ *   anniversary and the host can show the contact; null hides the action row.
  * @param showShareCardTooltip shows the one-shot coach mark on the Share icon; the caller
  *   persists its dismissal.
  * @param onShareCardTooltipDismissed called when the tooltip counts as shown: after its first
@@ -114,6 +117,7 @@ fun EventQuickViewSheet(
     onShare: () -> Unit = {},
     onExportIcs: () -> Unit = {},
     onShareAsCard: () -> Unit = {},
+    onViewContact: ((String) -> Unit)? = null,
     showShareCardTooltip: Boolean = false,
     onShareCardTooltipDismissed: () -> Unit = {},
     onRsvp: (org.onekash.kashcal.ui.components.attendees.AttendeeStatus) -> Unit = {},
@@ -379,6 +383,35 @@ fun EventQuickViewSheet(
                     formattedReminders = formattedReminders,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
+            }
+
+            // A birthday/anniversary event links back to its contact; offer the jump to the
+            // contact sheet before the action row.
+            val contactLookupKey = remember(event.caldavUrl) {
+                contactLookupKeyFromCaldavUrl(event.caldavUrl)
+            }
+            if (contactLookupKey != null && onViewContact != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .clickable { onViewContact.invoke(contactLookupKey) }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.contact_view),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -692,5 +725,19 @@ private fun ExpandedContentSection(
             }
         }
     }
+}
+
+/**
+ * The contact lookup key carried by a birthday/anniversary event's synthetic `caldavUrl`
+ * (`contact_birthday:<lookupKey>:<M>-<D>`; see [ContactEventType.getCaldavUrl]), or null for
+ * every other event. The key is everything between the first and last colon, so a lookup key
+ * containing a colon survives; only the `<M>-<D>` tail ends in a colon.
+ */
+internal fun contactLookupKeyFromCaldavUrl(caldavUrl: String?): String? {
+    if (ContactEventType.fromCaldavUrl(caldavUrl) == null) return null
+    return caldavUrl
+        ?.substringAfter(':')
+        ?.substringBeforeLast(':')
+        ?.takeIf(String::isNotBlank)
 }
 

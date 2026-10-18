@@ -1,7 +1,9 @@
 package org.onekash.kashcal.widget
 
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,8 +14,11 @@ import org.onekash.kashcal.data.db.entity.Calendar
 import org.onekash.kashcal.data.db.entity.Event
 import org.onekash.kashcal.data.db.entity.Occurrence
 import org.onekash.kashcal.data.db.entity.SyncStatus
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
+import org.onekash.kashcal.domain.model.VisibilityDomain
 import org.onekash.kashcal.domain.reader.DisplayEventRepository
+import org.onekash.kashcal.domain.reader.TaskReader
 import org.onekash.kashcal.util.DateTimeUtils
 import java.time.LocalDate
 import java.time.ZoneId
@@ -29,10 +34,13 @@ import java.time.ZoneId
  * - DisplayEvent to WidgetEvent mapping, and the default color when there is no calendar color
  * - getWeekEvents returning 7 entries, all empty with no events
  * - getEventsInRange keyed by day across two days
+ * - getOpenTasks: open-only, PENDING_DELETE excluded, when-ascending with undated last, limited
+ * - getTodayTasks: overdue kept, future and undated dropped
  */
 class WidgetDataRepositoryTest {
 
     private lateinit var displayEventRepository: DisplayEventRepository
+    private lateinit var taskReader: TaskReader
     private lateinit var repository: WidgetDataRepository
 
     private val testCalendar = Calendar(
@@ -47,8 +55,9 @@ class WidgetDataRepositoryTest {
     @Before
     fun setup() {
         displayEventRepository = mockk(relaxed = true)
+        taskReader = mockk(relaxed = true)
         val mockContext: android.content.Context = mockk(relaxed = true)
-        repository = WidgetDataRepository(mockContext, displayEventRepository)
+        repository = WidgetDataRepository(mockContext, displayEventRepository, taskReader)
     }
 
     // ========== Empty State Tests ==========
@@ -415,6 +424,136 @@ class WidgetDataRepositoryTest {
         assertFalse(dayEvents.find { it.title == "Future" }!!.isPast)
     }
 
+    // ========== Task Reads ==========
+
+    private fun stubTasks(tasks: List<Task>) {
+        every { taskReader.observeTasks(VisibilityDomain.SCHEDULE) } returns flowOf(tasks)
+    }
+
+    @Test
+    fun `getOpenTasks returns empty list when no tasks exist`() = runTest {
+        stubTasks(emptyList())
+
+        assertTrue(repository.getOpenTasks(limit = 8).isEmpty())
+    }
+
+    @Test
+    fun `getOpenTasks returns empty list for a non-positive limit`() = runTest {
+        stubTasks(listOf(createTask(1L, "Anything")))
+
+        assertTrue(repository.getOpenTasks(limit = 0).isEmpty())
+    }
+
+    @Test
+    fun `getOpenTasks keeps only open tasks without pending deletes`() = runTest {
+        stubTasks(
+            listOf(
+                createTask(1L, "Open"),
+                createTask(2L, "Completed", status = Task.STATUS_COMPLETED),
+                createTask(3L, "Cancelled", status = Task.STATUS_CANCELLED),
+                createTask(4L, "Deleted", syncStatus = SyncStatus.PENDING_DELETE)
+            )
+        )
+
+        val result = repository.getOpenTasks(limit = 8)
+        assertEquals(listOf("Open"), result.map { it.title })
+    }
+
+    @Test
+    fun `getOpenTasks sorts by when with undated last`() = runTest {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now()
+        val later = today.plusDays(2).atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+        val sooner = today.plusDays(1).atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+
+        stubTasks(
+            listOf(
+                createTask(1L, "Undated"),
+                createTask(2L, "Later", dueTs = later),
+                createTask(3L, "Sooner", dueTs = sooner)
+            )
+        )
+
+        val result = repository.getOpenTasks(limit = 8)
+        assertEquals(listOf("Sooner", "Later", "Undated"), result.map { it.title })
+    }
+
+    @Test
+    fun `getOpenTasks breaks when ties by priority then title`() = runTest {
+        val zone = ZoneId.systemDefault()
+        val due = LocalDate.now().plusDays(1).atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+
+        stubTasks(
+            listOf(
+                createTask(1L, "Beta", dueTs = due, priority = 5),
+                createTask(2L, "Alpha", dueTs = due, priority = 1),
+                createTask(3L, "Zulu", dueTs = due, priority = 1)
+            )
+        )
+
+        val result = repository.getOpenTasks(limit = 8)
+        assertEquals(listOf("Alpha", "Zulu", "Beta"), result.map { it.title })
+    }
+
+    @Test
+    fun `getOpenTasks respects the limit`() = runTest {
+        stubTasks(
+            listOf(
+                createTask(1L, "First"),
+                createTask(2L, "Second"),
+                createTask(3L, "Third")
+            )
+        )
+
+        assertEquals(listOf("First", "Second"), repository.getOpenTasks(limit = 2).map { it.title })
+    }
+
+    @Test
+    fun `getTodayTasks keeps overdue tasks and drops future and undated ones`() = runTest {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now()
+        val overdue = today.minusDays(1).atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+        val dueToday = today.atTime(18, 0).atZone(zone).toInstant().toEpochMilli()
+        val future = today.plusDays(3).atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+
+        stubTasks(
+            listOf(
+                createTask(1L, "Overdue", dueTs = overdue),
+                createTask(2L, "Due today", dueTs = dueToday),
+                createTask(3L, "Future", dueTs = future),
+                createTask(4L, "Undated"),
+                createTask(5L, "Done today", dueTs = dueToday, status = Task.STATUS_COMPLETED)
+            )
+        )
+
+        val result = repository.getTodayTasks()
+        assertEquals(listOf("Overdue", "Due today"), result.map { it.title })
+    }
+
+    @Test
+    fun `getOpenTasks maps the all-day flag and day code from the due`() = runTest {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now()
+        val timedDue = today.atTime(14, 0).atZone(zone).toInstant().toEpochMilli()
+        val allDayDue = today.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val expectedCode = today.year * 10000 + today.monthValue * 100 + today.dayOfMonth
+
+        stubTasks(
+            listOf(
+                createTask(1L, "Timed", dueTs = timedDue),
+                createTask(2L, "All day", dueTs = allDayDue, dueIsAllDay = true)
+            )
+        )
+
+        val result = repository.getOpenTasks(limit = 8)
+        val timed = result.first { it.title == "Timed" }
+        val allDay = result.first { it.title == "All day" }
+        assertFalse(timed.isAllDay)
+        assertEquals(expectedCode, timed.dayCode)
+        assertTrue(allDay.isAllDay)
+        assertEquals(expectedCode, allDay.dayCode)
+    }
+
     // ========== Helper Methods ==========
 
     private fun createDisplayEvent(
@@ -450,4 +589,26 @@ class WidgetDataRepositoryTest {
         val calendar = if (calendarColor != 0) testCalendar.copy(color = calendarColor) else null
         return DisplayEvent.Room(event, occurrence, calendar)
     }
+
+    /** A minimal open task; [dueTs] places it, [dtStartTs] stays null unless a test needs it. */
+    private fun createTask(
+        id: Long,
+        title: String,
+        dueTs: Long? = null,
+        dueIsAllDay: Boolean = false,
+        status: String = Task.STATUS_NEEDS_ACTION,
+        priority: Int = 0,
+        syncStatus: SyncStatus = SyncStatus.SYNCED
+    ): Task = Task(
+        id = id,
+        uid = "$title-$id@test.com",
+        calendarId = 1L,
+        summary = title,
+        status = status,
+        priority = priority,
+        dueTs = dueTs,
+        dueIsAllDay = dueIsAllDay,
+        syncStatus = syncStatus,
+        dtstamp = System.currentTimeMillis()
+    )
 }

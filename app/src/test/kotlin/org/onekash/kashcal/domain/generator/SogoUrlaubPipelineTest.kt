@@ -24,6 +24,7 @@ import org.onekash.kashcal.sync.parser.icaldav.ICalEventMapper
 import org.onekash.kashcal.testutil.TestDataStoreFactory
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.TimeZone
 
 /**
  * Drives the multi-day, two-VALARM event that surfaced once the CalDAV time-range query dropped
@@ -41,6 +42,7 @@ class SogoUrlaubPipelineTest {
     private lateinit var occurrenceGenerator: OccurrenceGenerator
     private lateinit var parser: ICalParser
     private var testCalendarId: Long = 0
+    private val savedTimeZone = TimeZone.getDefault()
 
     private val urlaubIcs = "BEGIN:VCALENDAR\r\n" +
         "PRODID:-//Test Client//NONSGML Sync Agent//EN\r\n" +
@@ -85,6 +87,8 @@ class SogoUrlaubPipelineTest {
 
     @Before
     fun setup() {
+        // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         val context: Context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, KashCalDatabase::class.java)
             .allowMainThreadQueries()
@@ -114,6 +118,7 @@ class SogoUrlaubPipelineTest {
 
     @After
     fun teardown() {
+        TimeZone.setDefault(savedTimeZone)
         database.close()
     }
 

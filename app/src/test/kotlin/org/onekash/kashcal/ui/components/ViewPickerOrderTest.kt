@@ -15,14 +15,15 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Pins the view picker's entries so an edit to [viewOptions] can't silently scramble what the
- * user sees: Agenda first, then the grid views from shortest span to longest (the Planner sits
- * next to Week, which shows the same week), each selectable view once (not INSIGHTS) with a
+ * Pins the view picker's entries so an edit to [defaultViewOptions] can't silently scramble what
+ * the user sees: the ViewMode declaration order (Month, Agenda, Tasks, Day, 3 Days, Week,
+ * Planner, Month Full, Year) — the same order the DataStore's self-healing fallback and the
+ * Views settings' initial list use — each selectable view once (not INSIGHTS/CONTACTS) with a
  * distinct icon that [iconForMode] finds by mode.
  *
  * The order is asserted twice on purpose: on the list itself, and on the rendered dropdown by
- * comparing each row's top bound. [viewOptions] also feeds the navigation drawer's view rows,
- * so the list-level assertion covers the drawer too.
+ * comparing each row's top bound. [defaultViewOptions] also feeds the navigation drawer's view
+ * rows, so the list-level assertion covers the drawer too.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [34], qualifiers = "w360dp-h9999dp-mdpi")
@@ -31,41 +32,45 @@ class ViewPickerOrderTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
-    /** Agenda, then the grid views ascending by span: one day through a full year. */
+    /** The ViewMode declaration order minus the drawer-only INSIGHTS and CONTACTS. */
     private val expectedOrder = listOf(
+        ViewMode.MONTH,
         ViewMode.AGENDA,
+        ViewMode.TASKS,
         ViewMode.DAY,
         ViewMode.THREE_DAYS,
         ViewMode.WEEK,
         ViewMode.PLANNER,
-        ViewMode.MONTH,
         ViewMode.MONTH_FULL,
         ViewMode.YEAR,
     )
 
     @Test
-    fun `view options run from shortest span to longest`() {
-        assertEquals(expectedOrder, viewOptions.map { it.mode })
+    fun `view options follow the ViewMode declaration order`() {
+        assertEquals(expectedOrder, defaultViewOptions.map { it.mode })
     }
 
     @Test
     fun `view options offer every selectable view exactly once`() {
-        // INSIGHTS is reached from the drawer's own row, not the view picker.
-        val selectable = ViewMode.entries.filter { it != ViewMode.INSIGHTS }
-        assertEquals(selectable.toSet(), viewOptions.map { it.mode }.toSet())
-        assertEquals(viewOptions.size, viewOptions.map { it.mode }.toSet().size)
+        // INSIGHTS and CONTACTS are reached from the drawer's own rows; neither is a persisted
+        // default view.
+        val selectable = ViewMode.entries.filterNot {
+            it == ViewMode.INSIGHTS || it == ViewMode.CONTACTS
+        }
+        assertEquals(selectable.toSet(), defaultViewOptions.map { it.mode }.toSet())
+        assertEquals(defaultViewOptions.size, defaultViewOptions.map { it.mode }.toSet().size)
     }
 
     @Test
     fun `every view option carries a distinct icon`() {
-        val icons = viewOptions.map { it.icon }
+        val icons = defaultViewOptions.map { it.icon }
         assertEquals(icons.size, icons.toSet().size)
     }
 
     @Test
     fun `icon lookup resolves by mode rather than list position`() {
         // Guards the reorder: a positional lookup would hand back a neighbour's icon.
-        viewOptions.forEach { option ->
+        defaultViewOptions.forEach { option ->
             assertEquals(
                 "Icon for ${option.mode} must match its own entry",
                 option.icon,
@@ -75,14 +80,14 @@ class ViewPickerOrderTest {
     }
 
     @Test
-    fun `dropdown renders the view entries in shortest-span-first order`() {
+    fun `dropdown renders the view entries in declaration order`() {
         composeTestRule.setContent {
             ViewPickerButton(currentView = ViewMode.MONTH, onViewSelect = {})
         }
 
         composeTestRule.onNodeWithContentDescription("Calendar view").performClick()
 
-        val labels = listOf("Agenda", "Day", "3 Days", "Week", "Planner", "Month", "Month (Full)", "Year")
+        val labels = listOf("Month", "Agenda", "Tasks", "Day", "3 Days", "Week", "Planner", "Month (Full)", "Year")
         val tops = labels.map { label ->
             composeTestRule.onNodeWithText(label, useUnmergedTree = true)
                 .assertIsDisplayed()

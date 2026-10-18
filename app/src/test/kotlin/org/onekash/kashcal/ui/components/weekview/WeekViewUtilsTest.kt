@@ -1,15 +1,18 @@
 package org.onekash.kashcal.ui.components.weekview
 
 import androidx.compose.ui.unit.dp
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.TimeZone
 
 /**
  * Tests [WeekViewUtils]: the day and week pagers, the day-strip render gate, visible and
@@ -21,6 +24,18 @@ import java.time.ZoneId
  */
 @RunWith(RobolectricTestRunner::class)
 class WeekViewUtilsTest {
+
+    /** The time-range formatting tests assert UTC wall clocks; see formatTimeRange below. */
+    private lateinit var savedZone: TimeZone
+
+    @Before
+    fun pinUtcZone() {
+        savedZone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+    }
+
+    @After
+    fun restorePhoneZone() = TimeZone.setDefault(savedZone)
 
     // ==================== Day Pager Tests ====================
 

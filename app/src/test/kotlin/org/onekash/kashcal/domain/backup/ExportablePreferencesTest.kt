@@ -12,8 +12,30 @@ import org.onekash.kashcal.data.preferences.PreferencesKeys
 class ExportablePreferencesTest {
 
     @Test
-    fun `allow list contains exactly 43 keys`() {
-        assertEquals(43, ExportablePreferences.KEYS.size)
+    fun `allow list contains exactly 49 keys`() {
+        assertEquals(49, ExportablePreferences.KEYS.size)
+    }
+
+    @Test
+    fun `customizable view keys are in the allow-list as portable display choices`() {
+        val viewKeys = listOf(
+            PreferencesKeys.VIEW_ORDER,
+            PreferencesKeys.VIEW_HIDDEN,
+            PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS,
+            PreferencesKeys.VIEW_OPT_WEEK_NUMBERS,
+            PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS,
+            PreferencesKeys.VIEW_OPT_MONTH_TASK_BADGE,
+        )
+        viewKeys.forEach { key ->
+            assertTrue(
+                "${key.name} must be in the allow-list",
+                ExportablePreferences.KEYS.any { it.name == key.name },
+            )
+            assertFalse(
+                "${key.name} must not be in EXCLUDED_KEY_NAMES",
+                ExportablePreferences.EXCLUDED_KEY_NAMES.contains(key.name),
+            )
+        }
     }
 
     @Test

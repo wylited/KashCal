@@ -76,6 +76,9 @@ object TestDataStoreFactory {
         every { allDayRowsExpanded } returns MutableStateFlow(false)
         every { agendaWeekBarExpanded } returns MutableStateFlow(true)
         every { accentSeed } returns MutableStateFlow(KashCalDataStore.ACCENT_SEED_DEFAULT)
+        // Customizable views: canonical order, nothing hidden.
+        every { visibleViewsOrder } returns MutableStateFlow(KashCalDataStore.parseViewOrder(null))
+        every { hiddenViews } returns MutableStateFlow(emptySet<String>())
         coEvery { getWeekViewScrollMinutes() } returns KashCalDataStore.WEEK_VIEW_SCROLL_NOT_SAVED
         coEvery { getWeekViewHourHeight() } returns KashCalDataStore.DEFAULT_HOUR_HEIGHT_DP
         every { plannerZoom } returns MutableStateFlow(1f)

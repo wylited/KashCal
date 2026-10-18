@@ -1,5 +1,6 @@
 package org.onekash.kashcal.sync.parser.icaldav
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -12,6 +13,7 @@ import org.onekash.kashcal.data.db.entity.Event
 import org.onekash.kashcal.data.db.entity.SyncStatus
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.TimeZone
 
 /**
  * Tests that the fresh path ([IcsPatcher.generateFresh]) ends every VEVENT with DTEND and never
@@ -31,9 +33,18 @@ class DurationFreshPathTest {
 
     private lateinit var parser: ICalParser
 
+    private val savedZone = TimeZone.getDefault()
+
+    // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
     @Before
     fun setup() {
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         parser = ICalParser()
+    }
+
+    @After
+    fun restore() {
+        TimeZone.setDefault(savedZone)
     }
 
     // ---------- Helpers ----------

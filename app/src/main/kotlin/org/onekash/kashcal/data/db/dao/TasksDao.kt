@@ -31,6 +31,17 @@ interface TasksDao {
     @Query("SELECT * FROM tasks WHERE calendar_id = :calendarId AND sync_status != 'SYNCED'")
     suspend fun getPendingForCalendar(calendarId: Long): List<Task>
 
+    /** Returns the tasks with [ids], in no particular order; unknown ids are skipped. */
+    @Query("SELECT * FROM tasks WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<Task>
+
+    /**
+     * Returns every task of [calendarId], any status and sync state: the task pull loads it
+     * once per sync for the etag diff and the stale-resource sweep.
+     */
+    @Query("SELECT * FROM tasks WHERE calendar_id = :calendarId")
+    suspend fun getAllForCalendar(calendarId: Long): List<Task>
+
     /** Observes every task of calendars visible on the schedule ([Calendar.isVisible]). */
     @Query("""
         SELECT tasks.* FROM tasks
@@ -64,6 +75,40 @@ interface TasksDao {
         AND COALESCE(tasks.due_ts, tasks.dt_start_ts) BETWEEN :startTs AND :endTs
     """)
     suspend fun getOpenTasksBetween(startTs: Long, endTs: Long): List<Task>
+
+    /** Agenda-visible twin of [getOpenTasksBetween] ([Calendar.isAgendaVisible]). */
+    @Query("""
+        SELECT tasks.* FROM tasks
+        JOIN calendars ON calendars.id = tasks.calendar_id
+        WHERE calendars.is_agenda_visible = 1
+        AND tasks.sync_status != 'PENDING_DELETE'
+        AND tasks.status NOT IN ('COMPLETED', 'CANCELLED')
+        AND COALESCE(tasks.due_ts, tasks.dt_start_ts) BETWEEN :startTs AND :endTs
+    """)
+    suspend fun getOpenTasksBetweenAgenda(startTs: Long, endTs: Long): List<Task>
+
+    /**
+     * Returns every task (`due ?? dtstart` within [startTs, endTs]), any status, of calendars
+     * visible on the schedule, without PENDING_DELETE rows.
+     */
+    @Query("""
+        SELECT tasks.* FROM tasks
+        JOIN calendars ON calendars.id = tasks.calendar_id
+        WHERE calendars.is_visible = 1
+        AND tasks.sync_status != 'PENDING_DELETE'
+        AND COALESCE(tasks.due_ts, tasks.dt_start_ts) BETWEEN :startTs AND :endTs
+    """)
+    suspend fun getTasksBetween(startTs: Long, endTs: Long): List<Task>
+
+    /** Agenda-visible twin of [getTasksBetween] ([Calendar.isAgendaVisible]). */
+    @Query("""
+        SELECT tasks.* FROM tasks
+        JOIN calendars ON calendars.id = tasks.calendar_id
+        WHERE calendars.is_agenda_visible = 1
+        AND tasks.sync_status != 'PENDING_DELETE'
+        AND COALESCE(tasks.due_ts, tasks.dt_start_ts) BETWEEN :startTs AND :endTs
+    """)
+    suspend fun getTasksBetweenAgenda(startTs: Long, endTs: Long): List<Task>
 
     /** Returns every task, any status, of agenda-visible calendars, without PENDING_DELETE. */
     @Query("""
@@ -106,17 +151,6 @@ interface TasksDao {
 
     @Query("DELETE FROM tasks WHERE calendar_id = :calendarId")
     suspend fun deleteByCalendarId(calendarId: Long)
-
-    /**
-     * Deletes the calendar's synced tasks whose server URL is not in [keepUrls]: the orphan
-     * sweep of a full pull. Locally changed rows keep their URL out of the sweep's reach only
-     * through [keepUrls]; the caller passes every URL it saw, pending or not.
-     */
-    @Query(
-        "DELETE FROM tasks WHERE calendar_id = :calendarId AND caldav_url IS NOT NULL " +
-            "AND caldav_url NOT IN (:keepUrls)"
-    )
-    suspend fun deleteOrphans(calendarId: Long, keepUrls: List<String>)
 
     /** Soft-deletes: marks the task PENDING_DELETE until its queued server delete is pushed. */
     @Query("""

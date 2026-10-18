@@ -50,6 +50,14 @@ interface PendingTaskOperationsDao {
     @Query("DELETE FROM pending_task_operations WHERE task_id = :taskId")
     suspend fun deleteForTask(taskId: Long)
 
+    /**
+     * Deletes [taskId]'s CREATE, UPDATE and MOVE operations, any status. A queued DELETE
+     * survives, so an edit queued after a delete can't resurrect a task the push is still
+     * tearing down; [TaskRepository.queueOperation] clears these before inserting a fresh op.
+     */
+    @Query("DELETE FROM pending_task_operations WHERE task_id = :taskId AND operation != 'DELETE'")
+    suspend fun deleteNonDeleteOpsForTask(taskId: Long)
+
     // ========== Status updates ==========
 
     @Query("""

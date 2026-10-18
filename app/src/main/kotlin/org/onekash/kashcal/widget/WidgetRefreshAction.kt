@@ -28,13 +28,15 @@ private const val TAG = "WidgetRefreshAction"
 enum class WidgetKind {
     AGENDA,
     WEEK,
-    UPCOMING;
+    UPCOMING,
+    TASKS;
 
     /** Returns the [GlanceAppWidget] to repaint for this kind. */
     fun widget(): GlanceAppWidget = when (this) {
         AGENDA -> AgendaWidget()
         WEEK -> WeekWidget()
         UPCOMING -> UpcomingWidget()
+        TASKS -> TasksWidget()
     }
 }
 
@@ -50,8 +52,8 @@ interface WidgetSyncEntryPoint {
 }
 
 /**
- * Handles a header refresh tap on the agenda, week and upcoming widgets: sync, then redraw, with a
- * brief syncing cue.
+ * Handles a header refresh tap on the agenda, week, upcoming and tasks widgets: sync, then
+ * redraw, with a brief syncing cue.
  *
  * 1. If this widget instance's cue is still active, ignore the tap; the stored deadline is a
  *    per-instance debounce. Taps on two different widgets still both sync, and since

@@ -1,5 +1,6 @@
 package org.onekash.kashcal.sync.parser.icaldav
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -14,6 +15,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.TimeZone
 
 /**
  * Tests round-trip fidelity: an entity through IcsPatcher.generateFresh(), ICalParser and
@@ -29,9 +31,18 @@ class IcsRoundTripFidelityTest {
 
     private lateinit var parser: ICalParser
 
+    private val savedZone = TimeZone.getDefault()
+
+    // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
     @Before
     fun setup() {
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         parser = ICalParser()
+    }
+
+    @After
+    fun restore() {
+        TimeZone.setDefault(savedZone)
     }
 
     // ========== RRULE ==========

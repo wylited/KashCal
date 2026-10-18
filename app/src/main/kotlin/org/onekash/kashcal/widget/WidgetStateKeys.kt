@@ -83,9 +83,9 @@ internal suspend fun <T : GlanceAppWidget> bumpRefreshStamp(
 }
 
 /**
- * Bumps the refresh stamp of every event widget and then updates it, all widgets in parallel.
- * [WidgetUpdateManager], [WidgetUpdateWorker] and [WidgetRetryWorker] all call this, so a new
- * widget is added here once.
+ * Bumps the refresh stamp of every data widget (events and tasks) and then updates it, all
+ * widgets in parallel. [WidgetUpdateManager], [WidgetUpdateWorker] and [WidgetRetryWorker] all
+ * call this, so a new widget is added here once.
  *
  * DateWidget is left out by default: it shows only today's date and refreshes on the platform's
  * 30-minute `updatePeriodMillis` update. Set [includeDateWidget] for changes to its appearance,
@@ -100,6 +100,7 @@ internal suspend fun refreshAllWidgets(
         add(WeekWidget::class.java to WeekWidget())
         add(MonthWidget::class.java to MonthWidget())
         add(UpcomingWidget::class.java to UpcomingWidget())
+        add(TasksWidget::class.java to TasksWidget())
         // DateWidget keys its accent producer on the same stamp, so the bump recolors it.
         if (includeDateWidget) add(DateWidget::class.java to DateWidget())
     }

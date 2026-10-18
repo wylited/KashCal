@@ -1,7 +1,9 @@
 package org.onekash.kashcal.ui.components
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.util.Calendar
 import java.util.TimeZone
@@ -17,6 +19,22 @@ import java.util.TimeZone
  * intent time), far-off timezones, and a 30-minute duration.
  */
 class EventFormSheetTimestampTest {
+
+    /**
+     * The pre-epoch case asserts an absolute wall clock (-1000 ms is Dec 31 1969 only at
+     * UTC+0); every other case builds and reads timestamps in the same zone, so a pinned
+     * UTC default keeps the whole suite host-independent.
+     */
+    private lateinit var savedZone: TimeZone
+
+    @Before
+    fun pinUtcZone() {
+        savedZone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+    }
+
+    @After
+    fun restorePhoneZone() = TimeZone.setDefault(savedZone)
 
     /**
      * Copies the `initialStartTs` read in [EventFormContent]: a [Calendar] set to the

@@ -71,6 +71,8 @@ import org.onekash.kashcal.ui.screens.settings.RestoreErrorDialog
 import org.onekash.kashcal.ui.screens.settings.RestoreSuccessDialog
 import org.onekash.kashcal.ui.screens.settings.SubscriptionsScreen
 import org.onekash.kashcal.ui.screens.settings.TagsScreen
+import org.onekash.kashcal.ui.screens.settings.ViewsScreen
+import org.onekash.kashcal.ui.screens.settings.ViewsScreenViewModel
 import org.onekash.kashcal.ui.theme.ColorSource
 import org.onekash.kashcal.ui.theme.KashCalTheme
 import org.onekash.kashcal.ui.theme.ThemeMode
@@ -397,6 +399,7 @@ fun SettingsRoute(
         // rememberSaveable keeps the choice across rotation.
         var showTagsScreen by rememberSaveable { mutableStateOf(openTagsInitially) }
         var showDeviceCalendarsScreen by rememberSaveable { mutableStateOf(false) }
+        var showViewsScreen by rememberSaveable { mutableStateOf(false) }
 
         // ICS import state
         var icsImportFile by remember { mutableStateOf<IcsImportFile?>(null) }
@@ -523,7 +526,8 @@ fun SettingsRoute(
                 showBirthdaysAnniversariesScreen ||
                 showSubscriptionsScreen ||
                 showTagsScreen ||
-                showDeviceCalendarsScreen
+                showDeviceCalendarsScreen ||
+                showViewsScreen
         ) {
             if (showTagsScreen) {
                 closeTags()
@@ -533,6 +537,7 @@ fun SettingsRoute(
             showBirthdaysAnniversariesScreen = false
             showSubscriptionsScreen = false
             showDeviceCalendarsScreen = false
+            showViewsScreen = false
         }
 
         // State-based navigation between the root and detail screens, animated as a directional
@@ -543,6 +548,7 @@ fun SettingsRoute(
             subscriptions = showSubscriptionsScreen,
             tags = showTagsScreen,
             deviceCalendars = showDeviceCalendarsScreen,
+            views = showViewsScreen,
         )
 
         Box(modifier = Modifier.fillMaxSize()) {
@@ -693,6 +699,19 @@ fun SettingsRoute(
                                 writeCalendarPermissionLauncher.launch(android.Manifest.permission.WRITE_CALENDAR)
                             },
                             onRefresh = viewModel::refreshDeviceCalendars
+                        )
+                    }
+                    SettingsDestination.Views -> {
+                        // Own ViewModel, per ViewsScreen's KDoc: a second HomeViewModel in the
+                        // settings activity would rerun its initialization for nothing.
+                        val viewsViewModel: ViewsScreenViewModel = hiltViewModel()
+                        val viewsSettings by viewsViewModel.state.collectAsStateWithLifecycle()
+                        ViewsScreen(
+                            state = viewsSettings,
+                            onNavigateBack = { showViewsScreen = false },
+                            onReorder = viewsViewModel::setViewsOrder,
+                            onToggleVisible = viewsViewModel::setViewVisible,
+                            onSetOption = viewsViewModel::setViewOption
                         )
                     }
                     SettingsDestination.Root -> {
@@ -851,6 +870,8 @@ fun SettingsRoute(
                             onNavigateToAccounts = { viewModel.onSearchClose(); showAccountsScreen = true },
                             // Navigate to Device Calendars detail screen
                             onNavigateToDeviceCalendars = { viewModel.onSearchClose(); showDeviceCalendarsScreen = true },
+                            // Navigate to Views detail screen
+                            onNavigateToViews = { viewModel.onSearchClose(); showViewsScreen = true },
                             // Inline search
                             isSearchActive = isSearchActive,
                             searchQuery = searchQuery,

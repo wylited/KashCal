@@ -186,10 +186,10 @@ class OkHttpCalDavClientCalendarProbeTest {
     }
 
     @Test
-    fun `tasks-only calendar answers false because the listing would not include it`() = runTest {
+    fun `tasks-only calendar is listed by the probe`() = runTest {
         enqueue207(multistatus(response(components = COMPONENTS_VTODO_ONLY)))
 
-        assertEquals(CalDavResult.Success(false), client.probeCalendarCollection(url()))
+        assertEquals(CalDavResult.Success(true), client.probeCalendarCollection(url()))
     }
 
     @Test
@@ -201,11 +201,11 @@ class OkHttpCalDavClientCalendarProbeTest {
     }
 
     @Test
-    fun `iCloud quirks also report a tasks-only list as false`() = runTest {
+    fun `iCloud quirks also list a tasks-only calendar`() = runTest {
         val icloudClient = OkHttpCalDavClient(ICloudQuirks(), OkHttpClient())
         enqueue207(multistatus(response(components = COMPONENTS_VTODO_ONLY)))
 
-        assertEquals(CalDavResult.Success(false), icloudClient.probeCalendarCollection(url()))
+        assertEquals(CalDavResult.Success(true), icloudClient.probeCalendarCollection(url()))
     }
 
     @Test

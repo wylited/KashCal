@@ -20,6 +20,7 @@ import org.onekash.kashcal.data.db.entity.Event
 import org.onekash.kashcal.data.db.entity.Occurrence
 import org.onekash.kashcal.domain.changes.RecentChangeItem
 import org.onekash.kashcal.domain.changes.RecentChangesRecorder
+import org.onekash.kashcal.domain.model.VisibilityDomain
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -240,9 +241,18 @@ class EventReader @Inject constructor(
         return calendarsDao.getAll()
     }
 
-    fun getVisibleCalendars(): Flow<List<Calendar>> {
+    /**
+     * Emits every calendar visible in [domain]: the SCHEDULE domain (every view and widget)
+     * reads `Calendar.isVisible`, the AGENDA domain (the Agenda view and Tasks screen) reads
+     * `Calendar.isAgendaVisible` — the wycal §34 split, where the drawer's checkbox and the
+     * agenda-eye are independent toggles.
+     */
+    fun getVisibleCalendars(domain: VisibilityDomain = VisibilityDomain.SCHEDULE): Flow<List<Calendar>> {
         return calendarsDao.getAll().map { calendars ->
-            calendars.filter { it.isVisible }
+            when (domain) {
+                VisibilityDomain.SCHEDULE -> calendars.filter { it.isVisible }
+                VisibilityDomain.AGENDA -> calendars.filter { it.isAgendaVisible }
+            }
         }
     }
 
@@ -270,6 +280,15 @@ class EventReader @Inject constructor(
     /** Stores [visible] in the calendar's `is_visible`, the source of truth for visibility. */
     suspend fun setCalendarVisibility(calendarId: Long, visible: Boolean) {
         calendarsDao.setVisible(calendarId, visible)
+    }
+
+    /**
+     * Stores [visible] in the calendar's `is_agenda_visible`, the Agenda/Tasks domain split
+     * ([CalendarsDao.setAgendaVisible]). The schedule checkbox doesn't move this flag and this
+     * write doesn't move the checkbox.
+     */
+    suspend fun setCalendarAgendaVisibility(calendarId: Long, visible: Boolean) {
+        calendarsDao.setAgendaVisible(calendarId, visible)
     }
 
     /** Stores [muted] in [Calendar.isNotificationMuted]. */

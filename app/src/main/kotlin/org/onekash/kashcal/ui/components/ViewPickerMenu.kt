@@ -9,8 +9,11 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CalendarViewMonth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material.icons.filled.ViewWeek
@@ -33,24 +36,38 @@ import androidx.compose.ui.unit.dp
 import org.onekash.kashcal.R
 import org.onekash.kashcal.ui.viewmodels.ViewMode
 
-internal data class ViewOption(
+/**
+ * One view-mode row of the picker and drawer: the mode and its icon. Public so hosts can pass
+ * a customized order (the Views settings' order, hidden removed) into [ViewPickerButton].
+ */
+data class ViewOption(
     val mode: ViewMode,
     val icon: ImageVector
 )
 
-internal val viewOptions = listOf(
-    ViewOption(ViewMode.AGENDA, Icons.Default.ViewAgenda),
-    ViewOption(ViewMode.DAY, Icons.Default.CalendarToday),
-    ViewOption(ViewMode.THREE_DAYS, Icons.Default.ViewWeek),
-    ViewOption(ViewMode.WEEK, Icons.Default.DateRange),
-    ViewOption(ViewMode.PLANNER, Icons.Default.ViewModule),
-    ViewOption(ViewMode.MONTH, Icons.Default.CalendarMonth),
-    ViewOption(ViewMode.MONTH_FULL, Icons.Default.GridView),
-    ViewOption(ViewMode.YEAR, Icons.Default.CalendarViewMonth)
-)
+/**
+ * The selectable calendar views in ViewMode declaration order — the pickers' default. INSIGHTS
+ * and CONTACTS stay out: the drawer lists them in their own rows, and neither is a persisted
+ * default view.
+ */
+val defaultViewOptions: List<ViewOption> =
+    ViewMode.entries
+        .filterNot { it == ViewMode.INSIGHTS || it == ViewMode.CONTACTS }
+        .map { ViewOption(it, iconForMode(it)) }
 
-internal fun iconForMode(mode: ViewMode): ImageVector =
-    viewOptions.firstOrNull { it.mode == mode }?.icon ?: Icons.Default.CalendarMonth
+internal fun iconForMode(mode: ViewMode): ImageVector = when (mode) {
+    ViewMode.MONTH -> Icons.Default.CalendarMonth
+    ViewMode.AGENDA -> Icons.Default.ViewAgenda
+    ViewMode.TASKS -> Icons.Default.Checklist
+    ViewMode.DAY -> Icons.Default.CalendarToday
+    ViewMode.THREE_DAYS -> Icons.Default.ViewWeek
+    ViewMode.WEEK -> Icons.Default.DateRange
+    ViewMode.PLANNER -> Icons.Default.ViewModule
+    ViewMode.MONTH_FULL -> Icons.Default.GridView
+    ViewMode.YEAR -> Icons.Default.CalendarViewMonth
+    ViewMode.INSIGHTS -> Icons.Default.Insights
+    ViewMode.CONTACTS -> Icons.Default.Contacts
+}
 
 @Composable
 internal fun viewModeLabel(mode: ViewMode): String = when (mode) {
@@ -68,14 +85,16 @@ internal fun viewModeLabel(mode: ViewMode): String = when (mode) {
 }
 
 /**
- * Shows the current view's icon with a small chevron; a tap opens a menu of [viewOptions] that
- * reports the chosen view through [onViewSelect].
+ * Shows the current view's icon with a small chevron; a tap opens a menu of [options] that
+ * reports the chosen view through [onViewSelect]. Hosts pass the Views settings' order minus
+ * the hidden views; the default is [defaultViewOptions].
  */
 @Composable
 fun ViewPickerButton(
     currentView: ViewMode,
     onViewSelect: (ViewMode) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    options: List<ViewOption> = defaultViewOptions
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -103,7 +122,7 @@ fun ViewPickerButton(
             expanded = expanded,
             onDismissRequest = { expanded = false }
         ) {
-            viewOptions.forEach { option ->
+            options.forEach { option ->
                 val isActive = currentView == option.mode
                 DropdownMenuItem(
                     text = { Text(viewModeLabel(option.mode)) },

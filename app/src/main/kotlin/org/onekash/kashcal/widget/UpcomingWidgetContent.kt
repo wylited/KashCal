@@ -42,7 +42,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * A row of the Upcoming Events widget's list: a day header, an event, or the dropped-days footer.
+ * A row of the Upcoming Events widget's list: a day header, an event, a tasks-section header, an
+ * open task, or the dropped-days footer.
  *
  * The widget shows the [UPCOMING_HORIZON_DAYS] days from today, skipping empty days and past
  * events. Past events are the ones [WidgetDataRepository] flags with `WidgetEvent.isPast`; this
@@ -61,6 +62,16 @@ internal sealed class UpcomingWidgetItem(val itemId: Long) {
     ) : UpcomingWidgetItem(dayCode.toLong() * 100_000L + event.eventId + ITEM_ID_EVENT_OFFSET)
 
     /**
+     * Section header of the "Open tasks" list that trails the events. The itemId sits one below
+     * the task range: headers ~2e7, events ~1e8..1e13, this 1e14-1, tasks from 1e14.
+     */
+    data object TasksHeader : UpcomingWidgetItem(ITEM_ID_TASKS_HEADER)
+
+    /** A row of the tasks section; [task] is due, starting or undated, open, in repo order. */
+    data class Task(val task: WidgetDataRepository.WidgetTask) :
+        UpcomingWidgetItem(ITEM_ID_TASK_OFFSET + task.taskId)
+
+    /**
      * Trailing row shown when the item cap ([MAX_UPCOMING_ITEMS]) drops whole days from the end
      * of the window. Tapping opens MainActivity via [ACTION_GO_TO_TODAY]. [daysDropped] is
      * always >= 1. The itemId is [Long.MAX_VALUE]: a list has one Footer, and the value sits well
@@ -70,6 +81,8 @@ internal sealed class UpcomingWidgetItem(val itemId: Long) {
 
     companion object {
         const val ITEM_ID_EVENT_OFFSET = 100_000_000L
+        const val ITEM_ID_TASKS_HEADER = 99_999_999_999_999L
+        const val ITEM_ID_TASK_OFFSET = 100_000_000_000_000L
     }
 }
 
@@ -98,6 +111,8 @@ internal const val UPCOMING_HORIZON_DAYS = 10
  * - Within a day, event order is kept; [WidgetDataRepository] sorts it.
  * - Each kept day produces one [UpcomingWidgetItem.Header] and one [UpcomingWidgetItem.Event]
  *   per non-past event; [UpcomingWidgetItem.Header.eventCount] counts only those.
+ * - After the days, an [UpcomingWidgetItem.TasksHeader] and one [UpcomingWidgetItem.Task] per
+ *   open task of [openTasks], in the order given ([WidgetDataRepository.getOpenTasks] sorts it).
  *
  * ## Cap
  *
@@ -107,10 +122,17 @@ internal const val UPCOMING_HORIZON_DAYS = 10
  * even if it alone exceeds the cap: a widget showing nothing for today is worse than today in
  * full. No Footer is emitted when no day was dropped.
  *
- * Returns an empty list when no non-past event remains; the caller shows the empty state.
+ * The tasks section shares the same cap, after the events: it is emitted only when the header
+ * plus at least one task still fit, and is truncated without a counter when the cap cuts it —
+ * dropped tasks are the widget's least-time-critical rows, unlike a dropped day. It sits before
+ * the [UpcomingWidgetItem.Footer], which stays the trailing row.
+ *
+ * Returns an empty list when no non-past event and no open task remains; the caller shows the
+ * empty state.
  */
 internal fun buildFlatUpcomingItems(
-    eventsByDay: Map<Int, List<WidgetDataRepository.WidgetEvent>>
+    eventsByDay: Map<Int, List<WidgetDataRepository.WidgetEvent>>,
+    openTasks: List<WidgetDataRepository.WidgetTask> = emptyList()
 ): List<UpcomingWidgetItem> {
     val items = mutableListOf<UpcomingWidgetItem>()
     var daysDropped = 0
@@ -127,6 +149,18 @@ internal fun buildFlatUpcomingItems(
         items.add(UpcomingWidgetItem.Header(dayCode, kept.size))
         kept.forEach { event ->
             items.add(UpcomingWidgetItem.Event(dayCode, event))
+        }
+    }
+
+    if (openTasks.isNotEmpty()) {
+        // Reserve the footer's slot so it can never be squeezed out by a task.
+        val reserved = if (daysDropped > 0) 1 else 0
+        val room = MAX_UPCOMING_ITEMS - items.size - reserved - 1
+        if (room >= 1) {
+            items.add(UpcomingWidgetItem.TasksHeader)
+            openTasks.take(room).forEach { task ->
+                items.add(UpcomingWidgetItem.Task(task))
+            }
         }
     }
 
@@ -220,7 +254,8 @@ internal fun upcomingWindow(
 
 /**
  * Renders the Upcoming Events widget: a scrollable list of day headers and events built by
- * [buildFlatUpcomingItems], or an empty state when no non-past event remains in the window.
+ * [buildFlatUpcomingItems], an "Open tasks" section after the events, or an empty state when
+ * neither has anything to show in the window.
  */
 @Composable
 fun UpcomingWidgetContent(
@@ -229,9 +264,10 @@ fun UpcomingWidgetContent(
     showEventEmojis: Boolean,
     timePattern: String,
     isRefreshing: Boolean = false,
-    detailedRows: Boolean = false
+    detailedRows: Boolean = false,
+    openTasks: List<WidgetDataRepository.WidgetTask> = emptyList()
 ) {
-    val items = remember(eventsByDay) { buildFlatUpcomingItems(eventsByDay) }
+    val items = remember(eventsByDay, openTasks) { buildFlatUpcomingItems(eventsByDay, openTasks) }
 
     Column(
         modifier = GlanceModifier
@@ -329,6 +365,16 @@ private fun UpcomingItemsList(
                         event = item.event,
                         dayCode = item.dayCode,
                         showEventEmojis = showEventEmojis,
+                        timePattern = timePattern,
+                        detailedRows = detailedRows
+                    )
+                }
+                is UpcomingWidgetItem.TasksHeader -> item(itemId = item.itemId) {
+                    UpcomingTasksHeader()
+                }
+                is UpcomingWidgetItem.Task -> item(itemId = item.itemId) {
+                    UpcomingTaskRow(
+                        task = item.task,
                         timePattern = timePattern,
                         detailedRows = detailedRows
                     )
@@ -479,6 +525,50 @@ private fun UpcomingEventRow(
     }
 }
 
+/** Shows the tasks section header: the Tasks label in the day-header styling, no count. */
+@Composable
+private fun UpcomingTasksHeader() {
+    val colors = dayHeaderColors(isToday = false)
+    Row(
+        modifier = GlanceModifier
+            .fillMaxWidth()
+            .background(colors.background.provider())
+            .padding(horizontal = WIDGET_HORIZONTAL_MARGIN_DP.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = LocalContext.current.getString(R.string.view_tasks),
+            style = TextStyle(
+                color = colors.text.provider(),
+                fontSize = WidgetTypography.contentTitle,
+                fontWeight = FontWeight.Medium
+            ),
+            maxLines = 1
+        )
+    }
+}
+
+/** Shows one open task; tapping opens the app at today, as the footer row does. */
+@Composable
+private fun UpcomingTaskRow(
+    task: WidgetDataRepository.WidgetTask,
+    timePattern: String,
+    detailedRows: Boolean
+) {
+    Row(
+        modifier = GlanceModifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = WIDGET_HORIZONTAL_MARGIN_DP.dp,
+                vertical = eventRowVerticalPaddingDp(detailedRows).dp
+            )
+            .clickable(actionStartActivity<MainActivity>(parameters = footerActionParameters())),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TaskRowInner(task, System.currentTimeMillis(), timePattern, detailedRows)
+    }
+}
+
 @Composable
 private fun UpcomingEmptyState() {
     val context = LocalContext.current
@@ -530,7 +620,8 @@ internal fun UpcomingWidgetScaffold(state: UpcomingState, isRefreshing: Boolean 
             showEventEmojis = state.showEventEmojis,
             timePattern = state.timePattern,
             isRefreshing = isRefreshing,
-            detailedRows = state.detailedRows
+            detailedRows = state.detailedRows,
+            openTasks = state.openTasks
         )
     }
 }

@@ -53,6 +53,8 @@ class DeviceHomeViewModelTestFactory(
 
     val eventReader: EventReader = eventReader ?: mockk {
         every { getVisibleOccurrencesInRange(any(), any()) } returns MutableStateFlow(emptyList())
+        // The agenda flow combines this for the AGENDA visibility domain.
+        every { getVisibleCalendars(any()) } returns MutableStateFlow(emptyList())
         every { getVisibleOccurrencesForDay(any()) } returns MutableStateFlow(emptyList())
         every { getVisibleOccurrencesWithEventsForDay(any()) } returns MutableStateFlow(emptyList())
         every { getPendingInvitations(any()) } returns MutableStateFlow(emptyList())
@@ -108,6 +110,11 @@ class DeviceHomeViewModelTestFactory(
         attendeeBackfill = mockk(relaxed = true),
         // Strict: the device paths never look up contacts.
         contactEmailReader = mockk(),
+        // Task collaborators: the task flows subscribe lazily (WhileSubscribed), so nothing
+        // here touches them; the widget manager is a side-effect collaborator.
+        taskReader = mockk(relaxed = true),
+        taskRepository = mockk(relaxed = true),
+        widgetUpdateManager = mockk(relaxed = true),
         context = context,
         ioDispatcher = ioDispatcher,
     )

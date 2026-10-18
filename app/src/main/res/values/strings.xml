@@ -1494,6 +1494,41 @@
     <string name="view_opt_month_task_badge">Task badges on days with due tasks</string>
     <string name="cd_calendar_agenda_visibility">Show in Agenda and Tasks</string>
 
+    <!-- Tasks -->
+    <string name="task_new">New task</string>
+    <string name="task_field_title">Task</string>
+    <string name="task_field_due">Due</string>
+    <string name="task_field_priority">Priority</string>
+    <string name="task_priority_none">None</string>
+    <string name="task_repeats">Repeats</string>
+    <string name="cd_task_complete">Mark complete</string>
+    <string name="cd_task_reopen">Mark open</string>
+    <string name="cd_task_priority">Priority %1$d</string>
+    <string name="task_delete_confirm">Tap again to delete</string>
+    <string name="tasks_empty">No tasks</string>
+    <string name="tasks_group_overdue">Overdue</string>
+    <string name="tasks_group_today">Today</string>
+    <string name="tasks_group_tomorrow">Tomorrow</string>
+    <string name="tasks_group_this_week">This week</string>
+    <string name="tasks_group_later">Later</string>
+    <string name="tasks_group_no_date">No date</string>
+    <string name="tasks_group_completed">Completed</string>
+    <string name="tasks_filter_open">Open</string>
+    <string name="tasks_filter_all">All</string>
+    <string name="tasks_filter_done">Done</string>
+    <string name="tasks_filter_priority_all">Any</string>
+    <string name="tasks_filter_p1">P1–3</string>
+    <string name="tasks_filter_p2">P4–6</string>
+    <string name="tasks_filter_p3">P7–9</string>
+    <string name="tasks_filter_priority_none">None</string>
+    <string name="task_status_open">Open</string>
+    <string name="task_status_in_progress">In progress</string>
+    <string name="task_status_completed">Completed</string>
+    <string name="task_status_cancelled">Cancelled</string>
+    <string name="task_quickview_status">Status</string>
+    <string name="task_quickview_due">Due</string>
+    <string name="tasks_widget_empty">No open tasks</string>
+
     <!-- YearOverlay -->
     <string name="label_go_to_month">Go to month</string>
 

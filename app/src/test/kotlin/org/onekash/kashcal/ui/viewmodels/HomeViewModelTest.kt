@@ -42,6 +42,7 @@ import org.onekash.kashcal.domain.coordinator.EventCoordinator
 import org.onekash.kashcal.domain.model.AccountProvider
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.domain.model.SearchResult
+import org.onekash.kashcal.domain.model.VisibilityDomain
 import org.onekash.kashcal.domain.reader.DisplayEventRepository
 import org.onekash.kashcal.domain.reader.EventReader
 import org.onekash.kashcal.domain.reader.EventReader.OccurrenceWithEvent
@@ -187,6 +188,9 @@ class HomeViewModelTest {
         // Initialize mocks
         eventCoordinator = mockk(relaxed = true)
         eventReader = mockk(relaxed = true)
+        // The agenda flow combines this for the AGENDA visibility domain; a relaxed Flow would
+        // never emit and starve the combine.
+        every { eventReader.getVisibleCalendars(any()) } returns MutableStateFlow(emptyList())
         displayEventRepository = mockk(relaxed = true)
         dataStore = mockk(relaxed = true)
         accountRepository = mockk(relaxed = true)
@@ -307,6 +311,9 @@ class HomeViewModelTest {
             deviceEventWriter = calendarProviderRepository.deviceEventWriter(dataStore),
             attendeeBackfill = io.mockk.mockk(relaxed = true),
             contactEmailReader = io.mockk.mockk(relaxed = true),
+            taskReader = io.mockk.mockk(relaxed = true),
+            taskRepository = io.mockk.mockk(relaxed = true),
+            widgetUpdateManager = io.mockk.mockk(relaxed = true),
             context = context,
             ioDispatcher = testDispatcher,
             currentDayCodeProvider = provider
@@ -1334,6 +1341,9 @@ class HomeViewModelTest {
             DisplayEvent.Room(testEvents[1], testOccurrences[1], testCalendars[1])
         )
         every { displayEventRepository.getDisplayEventsForRange(any(), any()) } returns flowOf(testDisplayEvents)
+        // The agenda keeps only Room events whose calendar is agenda-visible; expose the
+        // fixtures for the AGENDA domain specifically, so a domain regression fails here.
+        every { eventReader.getVisibleCalendars(VisibilityDomain.AGENDA) } returns MutableStateFlow(testCalendars)
 
         val viewModel = createViewModel()
         advanceUntilIdle()
@@ -1362,6 +1372,7 @@ class HomeViewModelTest {
             DisplayEvent.Room(testEvents[0], testOccurrences[0], testCalendars[0])
         )
         every { displayEventRepository.getDisplayEventsForRange(any(), any()) } returns flowOf(testDisplayEvents)
+        every { eventReader.getVisibleCalendars(VisibilityDomain.AGENDA) } returns MutableStateFlow(testCalendars)
 
         val viewModel = createViewModel()
         advanceUntilIdle()
@@ -1439,6 +1450,7 @@ class HomeViewModelTest {
             DisplayEvent.Room(laterEvent, laterOccurrence, testCalendars[0])
         )
         every { displayEventRepository.getDisplayEventsForRange(any(), any()) } returns flowOf(sortedDisplayEvents)
+        every { eventReader.getVisibleCalendars(VisibilityDomain.AGENDA) } returns MutableStateFlow(testCalendars)
 
         val viewModel = createViewModel()
         advanceUntilIdle()

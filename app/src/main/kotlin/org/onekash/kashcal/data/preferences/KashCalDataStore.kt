@@ -524,6 +524,72 @@ class KashCalDataStore(
         setPreference(PreferencesKeys.DEFAULT_CALENDAR_VIEW, view)
     }
 
+    // ========== Customizable Views ==========
+
+    /**
+     * Every selectable view in the user's chosen order, self-healed: stored keys that aren't
+     * valid are dropped, and a key missing from the stored list is appended in
+     * [VALID_VIEW_KEYS] order, so a preference written by an older version or mangled by a
+     * hand-edit can never lose a view. Hidden views stay in this list — hiding is tracked
+     * separately by [hiddenViews] — because the Views settings needs their position to display
+     * them in order.
+     */
+    val visibleViewsOrder: Flow<List<String>>
+        get() = getOptionalPreference(PreferencesKeys.VIEW_ORDER)
+            .map { raw -> parseViewOrder(raw) }
+
+    /** The valid view keys hidden from the view picker and drawer; invalid keys are dropped. */
+    val hiddenViews: Flow<Set<String>>
+        get() = getPreference(PreferencesKeys.VIEW_HIDDEN, emptySet<String>())
+            .map { hidden -> hidden.filterTo(mutableSetOf()) { it in VALID_VIEWS } }
+
+    /**
+     * Commits the Views settings: [orderedVisible] is the visible views in display order.
+     * VIEW_ORDER stores those keys followed by every key the list didn't mention (the hidden
+     * ones, in [VALID_VIEW_KEYS] order), and VIEW_HIDDEN stores exactly the unmentioned keys,
+     * so one write is the whole truth and a hidden view keeps no stale flag once re-shown.
+     */
+    suspend fun setVisibleViews(orderedVisible: List<String>) {
+        val visible = orderedVisible.filter { it in VALID_VIEWS }.distinct()
+        val hidden = VALID_VIEW_KEYS.filter { it !in visible }.toSet()
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.VIEW_ORDER] = (visible + hidden).joinToString(",")
+            preferences[PreferencesKeys.VIEW_HIDDEN] = hidden
+        }
+    }
+
+    /** Whether the Week and Planner grids drop Saturday and Sunday; see the Views settings. */
+    val viewOptHideWeekends: Flow<Boolean>
+        get() = getPreference(PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS, false)
+
+    suspend fun setViewOptHideWeekends(value: Boolean) {
+        setPreference(PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS, value)
+    }
+
+    /** Whether the Month and Agenda views carry a week-number column or caption. */
+    val viewOptWeekNumbers: Flow<Boolean>
+        get() = getPreference(PreferencesKeys.VIEW_OPT_WEEK_NUMBERS, false)
+
+    suspend fun setViewOptWeekNumbers(value: Boolean) {
+        setPreference(PreferencesKeys.VIEW_OPT_WEEK_NUMBERS, value)
+    }
+
+    /** Whether the Agenda view lists completed tasks next to the open ones (default off). */
+    val viewOptAgendaCompletedTasks: Flow<Boolean>
+        get() = getPreference(PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS, false)
+
+    suspend fun setViewOptAgendaCompletedTasks(value: Boolean) {
+        setPreference(PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS, value)
+    }
+
+    /** Whether the Month grids badge days with due tasks (default on). */
+    val viewOptMonthTaskBadge: Flow<Boolean>
+        get() = getPreference(PreferencesKeys.VIEW_OPT_MONTH_TASK_BADGE, true)
+
+    suspend fun setViewOptMonthTaskBadge(value: Boolean) {
+        setPreference(PreferencesKeys.VIEW_OPT_MONTH_TASK_BADGE, value)
+    }
+
     // ========== Migration Flags ==========
 
     val migrationV1Completed: Flow<Boolean>
@@ -1049,6 +1115,7 @@ class KashCalDataStore(
 
         const val VIEW_MONTH = "month"
         const val VIEW_AGENDA = "agenda"
+        const val VIEW_TASKS = "tasks"
         const val VIEW_DAY = "day"
         const val VIEW_THREE_DAYS = "three_days"
         const val VIEW_MONTH_FULL = "month_full"
@@ -1056,9 +1123,32 @@ class KashCalDataStore(
         const val VIEW_YEAR = "year"
         const val VIEW_PLANNER = "planner"
 
-        private val VALID_VIEWS = setOf(
-            VIEW_MONTH, VIEW_AGENDA, VIEW_DAY, VIEW_THREE_DAYS, VIEW_WEEK, VIEW_PLANNER, VIEW_MONTH_FULL, VIEW_YEAR,
+        /**
+         * The selectable view keys in [ViewMode][org.onekash.kashcal.ui.viewmodels.ViewMode]
+         * declaration order (the drawer-only INSIGHTS and CONTACTS are not views). The data
+         * layer can't see the UI enum, so this list mirrors it; when a view is added to the
+         * enum, its key joins here in the same slot. This is the self-healing fallback order of
+         * [parseViewOrder] and the tail [setVisibleViews] appends.
+         */
+        private val VALID_VIEW_KEYS = listOf(
+            VIEW_MONTH, VIEW_AGENDA, VIEW_TASKS, VIEW_DAY, VIEW_THREE_DAYS, VIEW_WEEK, VIEW_PLANNER, VIEW_MONTH_FULL, VIEW_YEAR,
         )
+
+        private val VALID_VIEWS = VALID_VIEW_KEYS.toSet()
+
+        /**
+         * Parses a stored [PreferencesKeys.VIEW_ORDER] value into the complete key list:
+         * blank or null yields the canonical order, unknown keys are dropped, and missing
+         * valid keys are appended in [VALID_VIEW_KEYS] order.
+         */
+        fun parseViewOrder(raw: String?): List<String> {
+            val stored = raw?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it in VALID_VIEWS }
+                .orEmpty()
+                .distinct()
+            return stored + VALID_VIEW_KEYS.filter { it !in stored }
+        }
 
         const val TIME_FORMAT_SYSTEM = "system"
         const val TIME_FORMAT_12H = "12h"

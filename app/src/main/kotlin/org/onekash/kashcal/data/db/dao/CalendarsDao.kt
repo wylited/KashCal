@@ -111,6 +111,14 @@ interface CalendarsDao {
     @Query("UPDATE calendars SET is_visible = :visible WHERE id = :id")
     suspend fun setVisible(id: Long, visible: Boolean)
 
+    /**
+     * Sets [Calendar.isAgendaVisible] on [id]; writes only that column. This is the Agenda and
+     * Tasks domain's own visibility: the schedule checkbox ([setVisible]) and this eye toggle
+     * are independent, so a calendar can show on the grid but stay out of the Agenda.
+     */
+    @Query("UPDATE calendars SET is_agenda_visible = :visible WHERE id = :id")
+    suspend fun setAgendaVisible(id: Long, visible: Boolean)
+
     /** Sets [Calendar.isNotificationMuted] on [id]; writes only that column. */
     @Query("UPDATE calendars SET is_notification_muted = :muted WHERE id = :id")
     suspend fun setNotificationMuted(id: Long, muted: Boolean)

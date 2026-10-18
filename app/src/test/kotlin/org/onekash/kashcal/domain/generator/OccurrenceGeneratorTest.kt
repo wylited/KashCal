@@ -49,9 +49,12 @@ class OccurrenceGeneratorTest {
     private lateinit var database: KashCalDatabase
     private lateinit var occurrenceGenerator: OccurrenceGenerator
     private var testCalendarId: Long = 0
+    private val savedTimeZone = TimeZone.getDefault()
 
     @Before
     fun setup() {
+        // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         val context: Context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, KashCalDatabase::class.java)
             .allowMainThreadQueries()
@@ -76,6 +79,7 @@ class OccurrenceGeneratorTest {
 
     @After
     fun teardown() {
+        TimeZone.setDefault(savedTimeZone)
         database.close()
     }
 

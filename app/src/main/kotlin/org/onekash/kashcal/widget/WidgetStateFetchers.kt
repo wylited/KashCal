@@ -44,7 +44,8 @@ internal sealed interface UpcomingState {
         val todayDayCode: Int,
         val showEventEmojis: Boolean,
         val timePattern: String,
-        val detailedRows: Boolean
+        val detailedRows: Boolean,
+        val openTasks: List<WidgetDataRepository.WidgetTask> = emptyList()
     ) : UpcomingState
 }
 
@@ -63,6 +64,9 @@ internal suspend fun fetchUpcomingState(
         val eventsByDay = withTimeoutOrNull(WIDGET_FETCH_TIMEOUT_MS) {
             repository.getEventsInRange(startDayCode, endDayCode)
         } ?: throw WidgetFetchTimeoutException("getEventsInRange exceeded ${WIDGET_FETCH_TIMEOUT_MS}ms")
+        val openTasks = withTimeoutOrNull(WIDGET_FETCH_TIMEOUT_MS) {
+            repository.getOpenTasks(limit = MAX_UPCOMING_ITEMS)
+        } ?: throw WidgetFetchTimeoutException("getOpenTasks exceeded ${WIDGET_FETCH_TIMEOUT_MS}ms")
         val showEventEmojis = dataStore.showEventEmojis.first()
         val timeFormatPref = dataStore.getTimeFormat()
         val is24Hour = DateFormat.is24HourFormat(context)
@@ -73,7 +77,8 @@ internal suspend fun fetchUpcomingState(
             todayDayCode = startDayCode,
             showEventEmojis = showEventEmojis,
             timePattern = timePattern,
-            detailedRows = detailedRows
+            detailedRows = detailedRows,
+            openTasks = openTasks
         )
     } catch (e: CancellationException) {
         throw e
@@ -86,6 +91,7 @@ internal suspend fun fetchUpcomingState(
 /** Resolved data for [AgendaWidget]'s `provideContent` render. */
 internal data class AgendaData(
     val events: List<WidgetDataRepository.WidgetEvent>,
+    val tasks: List<WidgetDataRepository.WidgetTask>,
     val showEventEmojis: Boolean,
     val maxEventsPerDay: Int,
     val timePattern: String,
@@ -117,19 +123,23 @@ internal suspend fun fetchAgendaData(
         val events = withTimeoutOrNull(WIDGET_FETCH_TIMEOUT_MS) {
             repository.getTodayEvents()
         } ?: throw WidgetFetchTimeoutException("getTodayEvents exceeded ${WIDGET_FETCH_TIMEOUT_MS}ms")
+        val tasks = withTimeoutOrNull(WIDGET_FETCH_TIMEOUT_MS) {
+            repository.getTodayTasks()
+        } ?: throw WidgetFetchTimeoutException("getTodayTasks exceeded ${WIDGET_FETCH_TIMEOUT_MS}ms")
         val showEventEmojis = dataStore.showEventEmojis.first()
         val maxEventsPerDay = dataStore.widgetMaxEventsPerDay.first()
         val timeFormatPref = dataStore.getTimeFormat()
         val is24Hour = DateFormat.is24HourFormat(context)
         val timePattern = DateTimeUtils.getTimePattern(timeFormatPref, is24Hour)
         val detailedRows = dataStore.widgetDetailedRows.first()
-        AgendaData(events, showEventEmojis, maxEventsPerDay, timePattern, widgetHeaderDate(), detailedRows)
+        AgendaData(events, tasks, showEventEmojis, maxEventsPerDay, timePattern, widgetHeaderDate(), detailedRows)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.w(TAG, "fetchAgendaData failed", e)
         AgendaData(
             events = emptyList(),
+            tasks = emptyList(),
             showEventEmojis = true,
             maxEventsPerDay = 5,
             timePattern = "h:mm a",
@@ -204,5 +214,42 @@ internal suspend fun fetchMonthEvents(
     } catch (e: Exception) {
         Log.w(TAG, "fetchMonthEvents failed", e)
         emptyMap()
+    }
+}
+
+/** Resolved data for [TasksWidget]'s `provideContent` render. */
+internal data class TasksData(
+    val tasks: List<WidgetDataRepository.WidgetTask>,
+    val timePattern: String,
+    val detailedRows: Boolean
+)
+
+/**
+ * Fetches the Tasks widget's open tasks. On failure returns no tasks with default settings, so
+ * the widget shows its "no open tasks" state, as [fetchAgendaData] does for events.
+ */
+internal suspend fun fetchTasksData(
+    repository: WidgetDataRepository,
+    dataStore: KashCalDataStore,
+    context: Context
+): TasksData {
+    return try {
+        val tasks = withTimeoutOrNull(WIDGET_FETCH_TIMEOUT_MS) {
+            repository.getOpenTasks(limit = TASKS_WIDGET_MAX_TASKS)
+        } ?: throw WidgetFetchTimeoutException("getOpenTasks exceeded ${WIDGET_FETCH_TIMEOUT_MS}ms")
+        val timeFormatPref = dataStore.getTimeFormat()
+        val is24Hour = DateFormat.is24HourFormat(context)
+        val timePattern = DateTimeUtils.getTimePattern(timeFormatPref, is24Hour)
+        val detailedRows = dataStore.widgetDetailedRows.first()
+        TasksData(tasks, timePattern, detailedRows)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "fetchTasksData failed", e)
+        TasksData(
+            tasks = emptyList(),
+            timePattern = "h:mm a",
+            detailedRows = false
+        )
     }
 }

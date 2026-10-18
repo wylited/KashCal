@@ -29,6 +29,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.TimeZone
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
@@ -45,8 +46,9 @@ class InsightsRepositoryTest {
     private var hiddenCalendarId: Long = 0
 
     private val testDispatcher = StandardTestDispatcher()
-    // The repository reads ZoneId.systemDefault(); Robolectric sets no zone, so these tests
-    // assume the host JVM runs in UTC.
+    private val savedTimeZone = TimeZone.getDefault()
+    // The repository reads ZoneId.systemDefault(); setup pins the JVM to UTC, so this
+    // zone matches regardless of the host.
     private val zone = ZoneId.of("UTC")
 
     // Monday 2026-04-13 to Sunday 2026-04-19 (Monday-start week)
@@ -55,6 +57,8 @@ class InsightsRepositoryTest {
 
     @Before
     fun setup() = runTest(testDispatcher) {
+        // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         val context: Context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, KashCalDatabase::class.java)
             .allowMainThreadQueries()
@@ -106,6 +110,7 @@ class InsightsRepositoryTest {
 
     @After
     fun teardown() {
+        TimeZone.setDefault(savedTimeZone)
         database.close()
     }
 

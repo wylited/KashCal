@@ -41,7 +41,8 @@ class WidgetPreviewContentTest {
             WeekWidget::class.java,
             MonthWidget::class.java,
             DateWidget::class.java,
-            UpcomingWidget::class.java
+            UpcomingWidget::class.java,
+            TasksWidget::class.java
         )
 
         widgets.forEach { clazz ->
@@ -61,7 +62,8 @@ class WidgetPreviewContentTest {
             WeekWidget(),
             MonthWidget(),
             DateWidget(),
-            UpcomingWidget()
+            UpcomingWidget(),
+            TasksWidget()
         )
 
         widgets.forEach { widget ->
@@ -86,7 +88,8 @@ class WidgetPreviewContentTest {
             "week_widget_info.xml" to WidgetPreviewSizes.WEEK,
             "month_widget_info.xml" to WidgetPreviewSizes.MONTH,
             "date_widget_info.xml" to WidgetPreviewSizes.DATE,
-            "upcoming_widget_info.xml" to WidgetPreviewSizes.UPCOMING
+            "upcoming_widget_info.xml" to WidgetPreviewSizes.UPCOMING,
+            "tasks_widget_info.xml" to WidgetPreviewSizes.TASKS
         ).forEach { (descriptor, sizeMode) ->
             val xml = File(resolveProjectRoot(), "app/src/main/res/xml/$descriptor").readText()
             val expected = previewSize(

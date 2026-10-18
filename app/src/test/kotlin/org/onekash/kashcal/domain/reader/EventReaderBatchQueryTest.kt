@@ -24,6 +24,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.TimeZone
 
 /**
  * Tests the batch-loading reads of [EventReader] over an in-memory Room database:
@@ -44,9 +45,12 @@ class EventReaderBatchQueryTest {
     private var secondCalendarId: Long = 0
 
     private val defaultZone = ZoneId.of("America/New_York")
+    private val savedTimeZone = TimeZone.getDefault()
 
     @Before
     fun setup() {
+        // Host-TZ pin: fixtures are zone-absolute; bucketing must not depend on the CI host.
+        TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
         val context: Context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, KashCalDatabase::class.java)
             .allowMainThreadQueries()
@@ -82,6 +86,7 @@ class EventReaderBatchQueryTest {
 
     @After
     fun teardown() {
+        TimeZone.setDefault(savedTimeZone)
         database.close()
     }
 

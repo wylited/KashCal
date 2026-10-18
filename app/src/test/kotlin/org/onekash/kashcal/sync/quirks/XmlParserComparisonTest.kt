@@ -104,7 +104,8 @@ class XmlParserComparisonTest {
             println("    ctag: ${it.ctag?.take(30)}...")
         }
 
-        assertEquals("Same number of calendars", regexCalendars.size, pullCalendars.size)
+        assertEquals("iCloud fixture now lists Personal, Reminders and Work", 3, regexCalendars.size)
+        assertEquals("XmlPullParser agrees on the iCloud calendar count", 3, pullCalendars.size)
 
         regexCalendars.forEachIndexed { i, regex ->
             val pull = pullCalendars[i]
@@ -129,7 +130,8 @@ class XmlParserComparisonTest {
         println("XmlPullParser found ${pullCalendars.size} calendars:")
         pullCalendars.forEach { println("  - ${it.displayName} (${it.href})") }
 
-        assertEquals("Same number of calendars", regexCalendars.size, pullCalendars.size)
+        assertEquals("Nextcloud fixture now lists Personal, Work, Company Holidays and Tasks", 4, regexCalendars.size)
+        assertEquals("XmlPullParser agrees on the Nextcloud calendar count", 4, pullCalendars.size)
     }
 
     // ==================== Sync Token Extraction ====================
@@ -621,15 +623,11 @@ class XmlParserComparisonTest {
                                     val href = currentHref!!
                                     val name = currentDisplayName ?: "Unnamed"
 
-                                    // Skips hrefs containing inbox, outbox or notification and
-                                    // names containing tasks or reminders.
+                                    // Skips hrefs containing inbox, outbox or notification.
                                     val hrefLower = href.lowercase()
-                                    val nameLower = name.lowercase()
                                     if (!hrefLower.contains("inbox") &&
                                         !hrefLower.contains("outbox") &&
-                                        !hrefLower.contains("notification") &&
-                                        !nameLower.contains("tasks") &&
-                                        !nameLower.contains("reminders")) {
+                                        !hrefLower.contains("notification")) {
                                         calendars.add(ParsedCalendar(
                                             href = href,
                                             displayName = name,
