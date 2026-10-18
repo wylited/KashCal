@@ -59,12 +59,11 @@ class DefaultQuirks(
      */
     private fun isListable(href: String, displayName: String, supportedComponents: Set<String>): Boolean =
         !shouldSkipCalendar(href, displayName) &&
-            // Skip calendars that support only non-VEVENT components (VTODO-only, VJOURNAL-only).
+            // Skip collections with neither VEVENT nor VTODO (VJOURNAL-only, VFREEBUSY-only).
             // An empty set means the server advertised no component set, so it's kept. A
-            // VTODO-only list therefore surfaces on a server that omits the set; name matching
-            // isn't used to hide it, because an events calendar the user named "Tasks" must
-            // never drop.
-            (supportedComponents.isEmpty() || "VEVENT" in supportedComponents)
+            // VTODO-only list therefore surfaces everywhere. Name matching isn't used to hide
+            // anything, because an events calendar the user named "Tasks" must never drop.
+            (supportedComponents.isEmpty() || "VEVENT" in supportedComponents || "VTODO" in supportedComponents)
 
     override fun extractICalData(responseBody: String): List<CalDavQuirks.ParsedEventData> {
         return xmlParser.extractICalData(responseBody)
@@ -139,14 +138,11 @@ class DefaultQuirks(
 
     override fun shouldSkipCalendar(href: String, displayName: String?): Boolean {
         // Skips the scheduling (inbox, outbox) and notification collections a server may
-        // expose beside real calendars, plus a generic server's task list. The task list
-        // matches only as the final segment in its trailing-slash form (`.../tasks/`), so a
-        // server whose account segment is "tasks" keeps its calendars, and an events
-        // calendar the user named "Tasks" isn't dropped on its name alone. Segment matching
-        // is described on [matchesReservedCollection].
+        // expose beside real calendars. A generic server's `/tasks/` collection is a real
+        // VTODO calendar list, so it is kept and gated by the component check in
+        // [isListable] instead.
         return matchesReservedCollection(
             href = href,
-            terminalSegments = setOf("tasks"),
         )
     }
 
@@ -165,9 +161,8 @@ class DefaultQuirks(
 
 /**
  * Path segments of the scheduling and notification collections a CalDAV server exposes
- * beside real calendars (RFC 6638 §2.1). "tasks" is left out on purpose: iCloud exposes a
- * real VTODO calendar at `/calendars/tasks/` with the `<calendar>` resourcetype, so the
- * tasks skip applies only to generic servers, through [DefaultQuirks]' `terminalSegments`.
+ * beside real calendars (RFC 6638 §2.1). "tasks" is left out on purpose: a `/tasks/`
+ * collection is a real VTODO calendar list, iCloud included.
  */
 internal val RESERVED_CALENDAR_SEGMENTS =
     setOf("inbox", "outbox", "notification", "notifications")

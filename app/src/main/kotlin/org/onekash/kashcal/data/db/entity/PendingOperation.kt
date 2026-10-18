@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import org.onekash.kashcal.domain.sync.RetryDelays
 
 /**
  * Queues a sync operation for a local change to an event in a server calendar.
@@ -180,10 +181,10 @@ data class PendingOperation(
         const val MOVE_PHASE_DELETE = 0  // Phase 0: WebDAV MOVE from the source
         const val MOVE_PHASE_CREATE = 1  // Phase 1: CREATE in the target, then DELETE the source
 
-        const val BASE_DELAY_MS = 30_000L                         // 30 seconds
-        const val MAX_BACKOFF_MS = 5L * 60 * 60 * 1000            // 5 hours, WorkManager's cap
-        const val OPERATION_LIFETIME_MS = 30L * 24 * 60 * 60 * 1000  // 30 days
-        const val AUTO_RESET_FAILED_MS = 24L * 60 * 60 * 1000     // 24 hours
+        const val BASE_DELAY_MS = RetryDelays.BASE_DELAY_MS                         // 30 seconds
+        const val MAX_BACKOFF_MS = RetryDelays.MAX_BACKOFF_MS            // 5 hours, WorkManager's cap
+        const val OPERATION_LIFETIME_MS = RetryDelays.OPERATION_LIFETIME_MS  // 30 days
+        const val AUTO_RESET_FAILED_MS = RetryDelays.AUTO_RESET_FAILED_MS     // 24 hours
 
         /**
          * Returns the delay before the next retry: [BASE_DELAY_MS] doubled per retry, capped at
@@ -193,10 +194,7 @@ data class PendingOperation(
          * add up to about 8.5 hours. The 5-hour cap applies from count 10, which only an
          * operation retried past its budget reaches (an unresolved 412).
          */
-        fun calculateRetryDelay(retryCount: Int): Long {
-            val multiplier = 1L shl retryCount.coerceIn(0, 10) // 2^retryCount, bounded [0, 10]
-            val delay = BASE_DELAY_MS * multiplier
-            return minOf(delay, MAX_BACKOFF_MS)
-        }
+        fun calculateRetryDelay(retryCount: Int): Long =
+            RetryDelays.calculateRetryDelay(retryCount)
     }
 }

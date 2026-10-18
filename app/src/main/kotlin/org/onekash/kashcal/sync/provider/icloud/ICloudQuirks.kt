@@ -62,12 +62,12 @@ class ICloudQuirks @Inject constructor() : CalDavQuirks {
      */
     private fun isListable(href: String, displayName: String, supportedComponents: Set<String>): Boolean =
         !shouldSkipCalendar(href, displayName) &&
-            // Skip calendars without VEVENT (VTODO-only, VJOURNAL-only). An empty set means the
-            // server advertised none, so it can't be shown to be tasks-only and is kept. iCloud
-            // always advertises the set (its Reminders list carries VTODO), so this hides
-            // iCloud's tasks list. Name matching is deliberately not used, so a real calendar
-            // named "Reminders" is never dropped.
-            (supportedComponents.isEmpty() || "VEVENT" in supportedComponents)
+            // Keep collections with VEVENT or VTODO (iCloud's Reminders list carries VTODO);
+            // skip those with neither (VJOURNAL-only). An empty set means the server
+            // advertised none, so it can't be shown to be journal-only and is kept. Name
+            // matching is deliberately not used, so a real calendar named "Reminders" is
+            // never dropped.
+            (supportedComponents.isEmpty() || "VEVENT" in supportedComponents || "VTODO" in supportedComponents)
 
     override fun extractICalData(responseBody: String): List<CalDavQuirks.ParsedEventData> {
         return xmlParser.extractICalData(responseBody)

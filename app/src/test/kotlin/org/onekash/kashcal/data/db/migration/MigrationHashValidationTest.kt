@@ -215,16 +215,33 @@ class MigrationHashValidationTest {
     }
 
     /**
-     * Runs the whole chain from a v1 database and validates the result against `26.json`. This
+     * Checks `MIGRATION_26_27` on a fresh v26 database against `27.json`: the hand-written
+     * `tasks`, `pending_task_operations` and `tasks_fts` tables with their indexes, and the
+     * `calendars.components` / `calendars.is_agenda_visible` columns.
+     */
+    @Test
+    fun `MIGRATION_26_27 produces a schema whose identityHash matches Room's v27 export`() {
+        helper.createDatabase(TEST_DB, 26).close()
+
+        helper.runMigrationsAndValidate(
+            TEST_DB,
+            27,
+            true,
+            Migrations.MIGRATION_26_27
+        ).close()
+    }
+
+    /**
+     * Runs the whole chain from a v1 database and validates the result against `27.json`. This
      * catches drift in an early migration that only shows once later versions build on it.
      */
     @Test
-    fun `full migration chain v1 to v26 produces schema whose identityHash matches Room's export`() {
+    fun `full migration chain v1 to v27 produces schema whose identityHash matches Room's export`() {
         helper.createDatabase(TEST_DB, 1).close()
 
         helper.runMigrationsAndValidate(
             TEST_DB,
-            26,
+            27,
             true,
             Migrations.MIGRATION_1_2,
             Migrations.MIGRATION_2_3,
@@ -251,7 +268,8 @@ class MigrationHashValidationTest {
             Migrations.MIGRATION_22_23,
             Migrations.MIGRATION_23_24,
             Migrations.MIGRATION_24_25,
-            Migrations.MIGRATION_25_26
+            Migrations.MIGRATION_25_26,
+            Migrations.MIGRATION_26_27
         ).close()
     }
 

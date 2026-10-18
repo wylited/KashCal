@@ -336,12 +336,12 @@ class CalDavXmlParserTest {
     }
 
     @Test
-    fun `extractCalendars filters out VTODO-only calendars from iCloud`() {
+    fun `extractCalendars parses the VTODO-only Reminders list`() {
         val xml = loadResource("caldav/icloud/03_calendar_list.xml")
         val calendars = parser.extractCalendars(xml)
 
-        // The VTODO-only tasks calendar is still parsed here; the VEVENT filter is in the
-        // quirks layer (isListable in ICloudQuirks and DefaultQuirks), not the parser.
+        // The VTODO-only tasks calendar is parsed here; inclusion is decided in the quirks
+        // layer (isListable in ICloudQuirks and DefaultQuirks), not the parser.
         val tasks = calendars.find { it.displayName == "Reminders" }
         if (tasks != null) {
             assertTrue("Tasks calendar should have VTODO", tasks.supportedComponents.contains("VTODO"))

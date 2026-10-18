@@ -1456,6 +1456,43 @@
     <string name="view_three_days">3 Days</string>
     <string name="view_year">Year</string>
     <string name="view_insights">Insights</string>
+    <string name="view_tasks">Tasks</string>
+    <string name="view_contacts">Contacts</string>
+
+    <!-- Contacts browser -->
+    <string name="contacts_search_hint">Search contacts</string>
+    <string name="contacts_empty">No contacts found</string>
+    <string name="contacts_permission_rationale">Allow contacts access to browse your CardDAV contacts.</string>
+    <string name="cd_contact_photo">Contact photo</string>
+    <string name="contact_birthday_chip">🎂 %1$s</string>
+    <string name="contact_anniversary_chip">💍 %1$s</string>
+    <string name="contact_section_phones">Phones</string>
+    <string name="contact_section_emails">Emails</string>
+    <string name="contact_section_addresses">Addresses</string>
+    <string name="contact_section_notes">Notes</string>
+    <string name="contact_section_events">Dates</string>
+    <string name="contact_call">Call</string>
+    <string name="contact_email">Email</string>
+    <string name="contact_map">Map</string>
+    <string name="contact_edit">Edit</string>
+    <string name="contact_delete">Delete</string>
+    <string name="contact_delete_confirm">Tap again to delete</string>
+    <string name="contact_new">New contact</string>
+    <string name="contact_edit_birthday">Edit birthday</string>
+    <string name="contact_edit_anniversary">Edit anniversary</string>
+    <string name="contact_view">View contact</string>
+    <string name="contact_untitled">Untitled</string>
+
+    <!-- View customization -->
+    <string name="settings_views_title">Views</string>
+    <string name="settings_views_subtitle">Reorder, hide and set per-view options</string>
+    <string name="cd_view_reorder">Reorder view</string>
+    <string name="cd_view_visibility">Show in view picker</string>
+    <string name="view_opt_hide_weekends">Hide weekends</string>
+    <string name="view_opt_week_numbers">Week numbers</string>
+    <string name="view_opt_agenda_completed_tasks">Show completed tasks</string>
+    <string name="view_opt_month_task_badge">Task badges on days with due tasks</string>
+    <string name="cd_calendar_agenda_visibility">Show in Agenda and Tasks</string>
 
     <!-- YearOverlay -->
     <string name="label_go_to_month">Go to month</string>

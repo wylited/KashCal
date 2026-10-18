@@ -443,6 +443,8 @@ enum class ViewMode(val key: String) {
     MONTH("month"),
     /** Upcoming events list, 90 days ahead. */
     AGENDA("agenda"),
+    /** Task list over every VTODO-capable calendar; grouping, filters and quick actions. */
+    TASKS("tasks"),
     /** Single-day scrollable time grid. */
     DAY("day"),
     /** 3-day scrollable time grid. */
@@ -456,7 +458,9 @@ enum class ViewMode(val key: String) {
     /** 12-month year overview grid. */
     YEAR("year"),
     /** Insights analytics screen; opened from the drawer only, never persisted as the default. */
-    INSIGHTS("insights");
+    INSIGHTS("insights"),
+    /** Contacts browser; opened from the drawer only, never persisted as the default. */
+    CONTACTS("contacts");
 
     /**
      * True for views that render a scrollable time grid (DAY, THREE_DAYS, WEEK). PLANNER pages by
@@ -475,7 +479,7 @@ enum class ViewMode(val key: String) {
         DAY -> 1
         THREE_DAYS -> 3
         WEEK -> 7
-        MONTH, AGENDA, MONTH_FULL, YEAR, INSIGHTS, PLANNER -> null
+        MONTH, AGENDA, MONTH_FULL, YEAR, INSIGHTS, CONTACTS, TASKS, PLANNER -> null
     }
 
     /**
@@ -486,7 +490,7 @@ enum class ViewMode(val key: String) {
         DAY -> 1
         THREE_DAYS -> 3
         WEEK -> 1
-        MONTH, AGENDA, MONTH_FULL, YEAR, INSIGHTS, PLANNER -> null
+        MONTH, AGENDA, MONTH_FULL, YEAR, INSIGHTS, CONTACTS, TASKS, PLANNER -> null
     }
 
     companion object {

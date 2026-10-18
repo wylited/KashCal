@@ -162,9 +162,9 @@ class DefaultQuirksTest {
         val xml = loadResource("caldav/nextcloud/03_calendar_list.xml")
         val calendars = quirks.extractCalendars(xml, "https://nextcloud.example.com")
 
-        // Keeps Personal, Work and Company Holidays; skips the root collection, Tasks, inbox
-        // and outbox.
-        assertEquals(3, calendars.size)
+        // Keeps Personal, Work, Company Holidays and the VTODO-only Tasks list; skips the
+        // root collection, inbox and outbox.
+        assertEquals(4, calendars.size)
 
         val personal = calendars.find { it.displayName == "Personal" }
         assertNotNull(personal)
@@ -177,6 +177,10 @@ class DefaultQuirksTest {
         assertEquals("/remote.php/dav/calendars/testuser/work/", work!!.href)
         assertEquals("#FF6B6BFF", work.color)
         assertFalse(work.isReadOnly)
+
+        val tasks = calendars.find { it.displayName == "Tasks" }
+        assertNotNull("the VTODO-only Tasks list surfaces", tasks)
+        assertEquals("/remote.php/dav/calendars/testuser/tasks/", tasks!!.href)
 
         val shared = calendars.find { it.displayName == "Company Holidays" }
         assertNotNull(shared)
@@ -208,12 +212,13 @@ class DefaultQuirksTest {
     }
 
     @Test
-    fun `extractCalendars skips Tasks calendar`() {
+    fun `extractCalendars keeps the Tasks calendar as a task list`() {
         val xml = loadResource("caldav/nextcloud/03_calendar_list.xml")
         val calendars = quirks.extractCalendars(xml, "https://nextcloud.example.com")
 
         val tasks = calendars.find { it.displayName == "Tasks" }
-        assertNull(tasks)
+        assertNotNull("a VTODO-only list is listable and syncs as tasks", tasks)
+        assertEquals(setOf("VTODO"), tasks!!.supportedComponents)
     }
 
     @Test
@@ -230,7 +235,7 @@ class DefaultQuirksTest {
     // ========== Component-based filtering tests ==========
 
     @Test
-    fun `extractCalendars skips VTODO-only calendar by component type`() {
+    fun `extractCalendars keeps VTODO-only calendar and skips VJOURNAL-only`() {
         val xml = """
             <?xml version="1.0" encoding="UTF-8"?>
             <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">
@@ -260,13 +265,29 @@ class DefaultQuirksTest {
                         <d:status>HTTP/1.1 200 OK</d:status>
                     </d:propstat>
                 </d:response>
+                <d:response>
+                    <d:href>/calendars/user/notes/</d:href>
+                    <d:propstat>
+                        <d:prop>
+                            <d:displayname>Journal Notes</d:displayname>
+                            <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+                            <cal:supported-calendar-component-set>
+                                <cal:comp name="VJOURNAL"/>
+                            </cal:supported-calendar-component-set>
+                        </d:prop>
+                        <d:status>HTTP/1.1 200 OK</d:status>
+                    </d:propstat>
+                </d:response>
             </d:multistatus>
         """.trimIndent()
 
         val calendars = quirks.extractCalendars(xml, "https://example.com")
 
-        assertEquals(1, calendars.size)
+        // A VTODO-only task list surfaces and syncs as tasks; a VJOURNAL-only one has
+        // neither of the app's components and stays out.
+        assertEquals(2, calendars.size)
         assertEquals("Personal", calendars[0].displayName)
+        assertEquals("My Todo List", calendars[1].displayName)
     }
 
     @Test
@@ -645,25 +666,17 @@ END:VCALENDAR</cal:calendar-data>
     @Test
     fun `shouldSkipCalendar does not skip a real calendar by its display name alone`() {
         // A display name can't tell a task list apart: a real events calendar the user named
-        // "Tasks" or "Reminders" carries the <calendar> resourcetype and, when it advertises
-        // VEVENT, must surface. A task list is VTODO-only, which the VEVENT component gate in
-        // extractCalendars drops when the server advertises the component set; a name filter
-        // would only drop real calendars.
+        // "Tasks" or "Reminders" carries the <calendar> resourcetype and must surface. A task
+        // list is kept too and shows in Tasks; a name filter would only drop real calendars.
         assertFalse(quirks.shouldSkipCalendar("/calendars/todo/", "Tasks"))
         assertFalse(quirks.shouldSkipCalendar("/calendars/reminders-list/", "Reminders"))
     }
 
     @Test
-    fun `shouldSkipCalendar returns true for tasks by href`() {
-        assertTrue(quirks.shouldSkipCalendar("/calendars/user/tasks/", null))
-    }
-
-    @Test
-    fun `shouldSkipCalendar matches tasks terminal segment only WITH a trailing slash`() {
-        // The terminal `tasks` skip requires the trailing-slash form (`.../tasks/`). A href
-        // without the slash is kept here; a VTODO-only tasks list is still dropped by the
-        // VEVENT component gate in extractCalendars when the server advertises the set.
-        assertTrue(quirks.shouldSkipCalendar("/calendars/user/tasks/", null))
+    fun `shouldSkipCalendar keeps a tasks collection`() {
+        // A generic server's `/tasks/` collection is a real VTODO calendar list; the
+        // component gate in extractCalendars decides inclusion, not the path.
+        assertFalse(quirks.shouldSkipCalendar("/calendars/user/tasks/", null))
         assertFalse(quirks.shouldSkipCalendar("/calendars/user/tasks", null))
     }
 
@@ -686,10 +699,9 @@ END:VCALENDAR</cal:calendar-data>
     }
 
     @Test
-    fun `shouldSkipCalendar matches tasks only as the final path segment`() {
-        // The task-list skip fires only for a terminal `.../tasks/` segment, so an account
-        // whose username segment is "tasks" keeps all its calendars.
-        assertTrue(quirks.shouldSkipCalendar("/calendars/user/tasks/", null))
+    fun `shouldSkipCalendar keeps tasks paths anywhere`() {
+        // No `tasks` skip exists anymore: a terminal `.../tasks/` segment and an account
+        // whose username segment is "tasks" both keep their calendars.
         assertFalse(quirks.shouldSkipCalendar("/calendars/tasks/personal/", "Personal"))
         assertFalse(quirks.shouldSkipCalendar("/calendars/tasks/work/", "Work"))
     }
@@ -698,7 +710,7 @@ END:VCALENDAR</cal:calendar-data>
     fun `shouldSkipCalendar keeps a real calendar regardless of its display name`() {
         // The display name never drives the skip: neither a substring ("Household tasks
         // list") nor an exact match ("Tasks", "Reminders") drops a collection that
-        // carries <calendar>. VTODO-only lists are excluded by the VEVENT gate instead.
+        // carries <calendar>.
         assertFalse(quirks.shouldSkipCalendar("/calendars/user/household/", "Household tasks list"))
         assertFalse(quirks.shouldSkipCalendar("/calendars/user/mom/", "Reminders from Mom"))
         assertFalse(quirks.shouldSkipCalendar("/calendars/user/todo/", "Tasks"))

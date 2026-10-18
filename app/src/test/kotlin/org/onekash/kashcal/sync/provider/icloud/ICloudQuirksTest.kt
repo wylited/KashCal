@@ -283,7 +283,7 @@ class ICloudQuirksTest {
     // ========== Component-based filtering tests ==========
 
     @Test
-    fun `extractCalendars skips VTODO-only calendar by component type`() {
+    fun `extractCalendars keeps VTODO-only calendar and skips VJOURNAL-only`() {
         val xml = """
             <multistatus xmlns="DAV:">
                 <response xmlns="DAV:">
@@ -310,13 +310,28 @@ class ICloudQuirksTest {
                         </prop>
                     </propstat>
                 </response>
+                <response xmlns="DAV:">
+                    <href>/123/calendars/notes/</href>
+                    <propstat>
+                        <prop>
+                            <displayname>Notes</displayname>
+                            <resourcetype><collection/><calendar xmlns="urn:ietf:params:xml:ns:caldav"/></resourcetype>
+                            <supported-calendar-component-set xmlns="urn:ietf:params:xml:ns:caldav">
+                                <comp name='VJOURNAL' xmlns='urn:ietf:params:xml:ns:caldav'/>
+                            </supported-calendar-component-set>
+                        </prop>
+                    </propstat>
+                </response>
             </multistatus>
         """.trimIndent()
 
         val calendars = quirks.extractCalendars(xml, "https://caldav.icloud.com")
 
-        assertEquals(1, calendars.size)
+        // The VTODO-only Reminders list surfaces and syncs as tasks; a VJOURNAL-only
+        // collection has neither of the app's components and stays out.
+        assertEquals(2, calendars.size)
         assertEquals("Personal", calendars[0].displayName)
+        assertEquals("Tasks", calendars[1].displayName)
     }
 
     @Test
@@ -548,10 +563,9 @@ END:VCALENDAR</calendar-data>
     }
 
     @Test
-    fun `should not skip iCloud tasks calendar by path — the VEVENT gate handles it`() {
+    fun `should not skip iCloud tasks calendar by path — the component gate handles inclusion`() {
         // iCloud's /tasks/ ("Reminders") is a real <calendar>, so ICloudQuirks must not skip
-        // it by path. It is VTODO-only, and the VEVENT component gate that extractCalendars
-        // applies keeps it off-screen.
+        // it by path. It is VTODO-only and syncs as tasks.
         assertFalse(quirks.shouldSkipCalendar("/user/calendars/tasks/", "Tasks"))
         assertFalse(quirks.shouldSkipCalendar("/user/calendars/reminders/", "Reminders"))
     }
@@ -581,7 +595,6 @@ END:VCALENDAR</calendar-data>
     fun `should keep a real calendar regardless of its display name`() {
         // The display name never drives the skip: a real events calendar the user named
         // "Tasks", "Reminders" or "Household tasks list" carries <calendar> and must survive.
-        // Only VTODO-only lists are excluded, by the VEVENT gate.
         assertFalse(quirks.shouldSkipCalendar("/user/calendars/household/", "Household tasks list"))
         assertFalse(quirks.shouldSkipCalendar("/user/calendars/mom/", "Reminders from Mom"))
         assertFalse(quirks.shouldSkipCalendar("/user/calendars/todo/", "Tasks"))

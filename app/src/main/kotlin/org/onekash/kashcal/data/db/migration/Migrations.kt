@@ -1484,6 +1484,168 @@ object Migrations {
         }
     }
 
+    /** The columns `tasks` and `pending_task_operations` must have after [MIGRATION_26_27]. */
+    private val TASKS_COLUMNS = listOf(
+        "id", "uid", "calendar_id", "summary", "description", "status", "priority",
+        "percent_complete", "due_ts", "due_timezone", "due_is_all_day", "dt_start_ts",
+        "completed_ts", "rrule", "sequence", "unknown_lines", "raw_ical", "caldav_url",
+        "etag", "sync_status", "dtstamp", "created_at", "updated_at", "local_modified_at",
+        "server_modified_at"
+    )
+
+    private val PENDING_TASK_OPERATIONS_COLUMNS = listOf(
+        "id", "task_id", "operation", "status", "retry_count", "max_retries", "next_retry_at",
+        "last_error", "created_at", "updated_at", "target_url", "target_calendar_id"
+    )
+
+    /**
+     * Migrates 26 to 27: adds VTODO support and the agenda-visibility split.
+     *
+     * - `tasks` and `pending_task_operations`: the task store and its sync queue, empty on
+     *   arrival and filled by the next pull.
+     * - `tasks_fts`: FTS4 over task summary and description, with Room's content-sync triggers.
+     * - `calendars.components`: the collection's supported components, from the server probe on
+     *   the next sync; existing rows keep "VEVENT", so nothing changes until the probe runs.
+     *   Local lists take "VEVENT,VTODO" immediately.
+     * - `calendars.is_agenda_visible`: seeds 1, preserving the current behavior where an agenda
+     *   item's visibility followed the calendar's single flag.
+     *
+     * Same transaction, idempotency and validation as [MIGRATION_24_25].
+     */
+    val MIGRATION_26_27 = object : Migration(26, 27) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.beginTransaction()
+            try {
+                // 1. Tables and indexes
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `tasks` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`uid` TEXT NOT NULL, `calendar_id` INTEGER NOT NULL, " +
+                        "`summary` TEXT NOT NULL, `description` TEXT, " +
+                        "`status` TEXT NOT NULL, `priority` INTEGER NOT NULL, " +
+                        "`percent_complete` INTEGER, `due_ts` INTEGER, " +
+                        "`due_timezone` TEXT, `due_is_all_day` INTEGER NOT NULL, " +
+                        "`dt_start_ts` INTEGER, `completed_ts` INTEGER, `rrule` TEXT, " +
+                        "`sequence` INTEGER NOT NULL, `unknown_lines` TEXT, " +
+                        "`raw_ical` TEXT, `caldav_url` TEXT, `etag` TEXT, " +
+                        "`sync_status` TEXT NOT NULL, `dtstamp` INTEGER NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, " +
+                        "`local_modified_at` INTEGER, `server_modified_at` INTEGER, " +
+                        "FOREIGN KEY(`calendar_id`) REFERENCES `calendars`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE )"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_tasks_calendar_id_uid` " +
+                        "ON `tasks` (`calendar_id`, `uid`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_tasks_calendar_id` ON `tasks` (`calendar_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_tasks_due_ts` ON `tasks` (`due_ts`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_tasks_caldav_url` ON `tasks` (`caldav_url`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_tasks_sync_status` ON `tasks` (`sync_status`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pending_task_operations` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`task_id` INTEGER NOT NULL, `operation` TEXT NOT NULL, " +
+                        "`status` TEXT NOT NULL DEFAULT 'PENDING', " +
+                        "`retry_count` INTEGER NOT NULL DEFAULT 0, " +
+                        "`max_retries` INTEGER NOT NULL DEFAULT 5, " +
+                        "`next_retry_at` INTEGER NOT NULL DEFAULT 0, " +
+                        "`last_error` TEXT, `created_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, `target_url` TEXT, " +
+                        "`target_calendar_id` INTEGER)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS " +
+                        "`index_pending_task_operations_status_next_retry_at` " +
+                        "ON `pending_task_operations` (`status`, `next_retry_at`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_pending_task_operations_task_id` " +
+                        "ON `pending_task_operations` (`task_id`)"
+                )
+                db.execSQL(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS `tasks_fts` USING FTS4(" +
+                        "`summary` TEXT NOT NULL, `description` TEXT, content=`tasks`)"
+                )
+                // Room's content-sync triggers, recreated on every open; written here so the
+                // index stays in step between the migration and the next open.
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_tasks_fts_BEFORE_UPDATE " +
+                        "BEFORE UPDATE ON `tasks` BEGIN " +
+                        "DELETE FROM tasks_fts WHERE docid=old.`rowid`; END"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_tasks_fts_BEFORE_DELETE " +
+                        "BEFORE DELETE ON `tasks` BEGIN " +
+                        "DELETE FROM tasks_fts WHERE docid=old.`rowid`; END"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_tasks_fts_AFTER_UPDATE " +
+                        "AFTER UPDATE ON `tasks` BEGIN " +
+                        "INSERT INTO tasks_fts(docid, `summary`, `description`) " +
+                        "VALUES (new.`rowid`, new.`summary`, new.`description`); END"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_tasks_fts_AFTER_INSERT " +
+                        "AFTER INSERT ON `tasks` BEGIN " +
+                        "INSERT INTO tasks_fts(docid, `summary`, `description`) " +
+                        "VALUES (new.`rowid`, new.`summary`, new.`description`); END"
+                )
+
+                // 2. Calendar columns
+                addColumnIfNotExists(db, "calendars", "components", "TEXT NOT NULL DEFAULT 'VEVENT'")
+                addColumnIfNotExists(
+                    db, "calendars", "is_agenda_visible", "INTEGER NOT NULL DEFAULT 1"
+                )
+                db.execSQL(
+                    "UPDATE calendars SET components = 'VEVENT,VTODO' " +
+                        "WHERE account_id IN (SELECT id FROM accounts WHERE provider = 'LOCAL')"
+                )
+
+                // 3. Validation, before setTransactionSuccessful() so a throw rolls back
+                val missing = buildList {
+                    tableColumns(db, "tasks").let { columns ->
+                        if (columns.isEmpty()) {
+                            add("tasks (table)")
+                        } else {
+                            TASKS_COLUMNS.filterNot { it in columns }.forEach { add("tasks.$it") }
+                        }
+                    }
+                    tableColumns(db, "pending_task_operations").let { columns ->
+                        if (columns.isEmpty()) {
+                            add("pending_task_operations (table)")
+                        } else {
+                            PENDING_TASK_OPERATIONS_COLUMNS.filterNot { it in columns }
+                                .forEach { add("pending_task_operations.$it") }
+                        }
+                    }
+                    if (!tableExists(db, "tasks_fts")) add("tasks_fts (table)")
+                    if (!columnExists(db, "calendars", "components")) add("calendars.components")
+                    if (!columnExists(db, "calendars", "is_agenda_visible")) {
+                        add("calendars.is_agenda_visible")
+                    }
+                }
+                if (missing.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "MIGRATION_26_27 post-migration validation failed: missing $missing"
+                    )
+                }
+
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+    }
+
     /** Lists every manual migration in order; add each new one here. */
     val ALL_MIGRATIONS = arrayOf(
         MIGRATION_1_2,
@@ -1509,6 +1671,7 @@ object Migrations {
         MIGRATION_22_23,
         MIGRATION_23_24,
         MIGRATION_24_25,
-        MIGRATION_25_26
+        MIGRATION_25_26,
+        MIGRATION_26_27
     )
 }

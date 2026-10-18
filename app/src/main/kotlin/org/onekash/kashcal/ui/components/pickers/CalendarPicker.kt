@@ -61,22 +61,27 @@ fun CalendarPickerContent(
             )
         } else {
             calendarGroups.forEach { group ->
-                Text(
-                    text = group.accountName,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .padding(top = 4.dp)
-                )
-                group.calendars.forEach { calendar ->
-                    CalendarItem(
-                        calendar = calendar,
-                        isSelected = !isSelectedDeviceCalendar && selectedCalendarId == calendar.id,
-                        onClick = { onSelect(calendar.id, calendar.displayName, calendar.color, false) }
+                // An events picker lists only collections that store VEVENTs; a VTODO-only
+                // task list stays out (the drawer and the tasks picker still show it).
+                val eventCalendars = group.calendars.filter { it.supportsEvents }
+                if (eventCalendars.isNotEmpty()) {
+                    Text(
+                        text = group.accountName,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(top = 4.dp)
                     )
+                    eventCalendars.forEach { calendar ->
+                        CalendarItem(
+                            calendar = calendar,
+                            isSelected = !isSelectedDeviceCalendar && selectedCalendarId == calendar.id,
+                            onClick = { onSelect(calendar.id, calendar.displayName, calendar.color, false) }
+                        )
+                    }
                 }
             }
 
@@ -293,22 +298,26 @@ fun SimpleCalendarPicker(
             )
         } else {
             calendarGroups.forEach { group ->
-                Text(
-                    text = group.accountName,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .padding(top = 4.dp)
-                )
-                group.calendars.forEach { calendar ->
-                    CalendarItem(
-                        calendar = calendar,
-                        isSelected = selectedCalendarId == calendar.id,
-                        onClick = { onCalendarSelect(calendar.id) }
+                // Same events-only rule as [CalendarPickerContent]; VTODO-only lists stay out.
+                val eventCalendars = group.calendars.filter { it.supportsEvents }
+                if (eventCalendars.isNotEmpty()) {
+                    Text(
+                        text = group.accountName,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(top = 4.dp)
                     )
+                    eventCalendars.forEach { calendar ->
+                        CalendarItem(
+                            calendar = calendar,
+                            isSelected = selectedCalendarId == calendar.id,
+                            onClick = { onCalendarSelect(calendar.id) }
+                        )
+                    }
                 }
             }
         }

@@ -287,7 +287,8 @@ class CalDavAccountDiscoveryService @Inject constructor(
                     val updated = existingCalendar.copy(
                         displayName = calDavCalendar.displayName,
                         color = parseColor(calDavCalendar.color, index),
-                        isReadOnly = calDavCalendar.isReadOnly
+                        isReadOnly = calDavCalendar.isReadOnly,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     calendarRepository.updateCalendar(updated)
                     updated
@@ -301,7 +302,8 @@ class CalDavAccountDiscoveryService @Inject constructor(
                         ctag = null,  // Don't store ctag - first sync must fetch events
                         isReadOnly = calDavCalendar.isReadOnly,
                         isDefault = isFirst, // The first created calendar is the default
-                        isVisible = true
+                        isVisible = true,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     val calendarId = calendarRepository.createCalendar(newCalendar)
                     isFirst = false
@@ -436,7 +438,8 @@ class CalDavAccountDiscoveryService @Inject constructor(
                         displayName = calDavCalendar.displayName,
                         color = ServerColorParser.parseCaldavColorToArgb(calDavCalendar.color)
                             ?: existingCalendar.color,
-                        isReadOnly = calDavCalendar.isReadOnly
+                        isReadOnly = calDavCalendar.isReadOnly,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     calendarRepository.updateCalendar(updated)
                     updated
@@ -449,7 +452,8 @@ class CalDavAccountDiscoveryService @Inject constructor(
                         ctag = null,  // Must be null so first sync does a full pull
                         isReadOnly = calDavCalendar.isReadOnly,
                         isDefault = false,
-                        isVisible = true
+                        isVisible = true,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     val calendarId = calendarRepository.createCalendar(newCalendar)
                     newCalendar.copy(id = calendarId)
@@ -671,7 +675,7 @@ class CalDavAccountDiscoveryService @Inject constructor(
                     href = calDavCalendar.url,
                     displayName = calDavCalendar.displayName,
                     color = parseColor(calDavCalendar.color, index),
-                    supportsEvents = true,
+                    supportsVTodo = "VTODO" in calDavCalendar.supportedComponents,
                     isReadOnly = calDavCalendar.isReadOnly
                 )
             }
@@ -791,7 +795,8 @@ class CalDavAccountDiscoveryService @Inject constructor(
                     val updated = existingCalendar.copy(
                         displayName = discoveredCalendar.displayName,
                         color = discoveredCalendar.color,
-                        isReadOnly = discoveredCalendar.isReadOnly
+                        isReadOnly = discoveredCalendar.isReadOnly,
+                        components = if (discoveredCalendar.supportsVTodo) "VEVENT,VTODO" else "VEVENT"
                     )
                     calendarRepository.updateCalendar(updated)
                     updated
@@ -805,7 +810,8 @@ class CalDavAccountDiscoveryService @Inject constructor(
                         ctag = null,  // Don't store ctag - first sync must fetch events
                         isReadOnly = discoveredCalendar.isReadOnly,
                         isDefault = isFirst,
-                        isVisible = true
+                        isVisible = true,
+                        components = if (discoveredCalendar.supportsVTodo) "VEVENT,VTODO" else "VEVENT"
                     )
                     val calendarId = calendarRepository.createCalendar(newCalendar)
                     isFirst = false

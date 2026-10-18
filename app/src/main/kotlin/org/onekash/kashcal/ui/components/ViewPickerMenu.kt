@@ -63,6 +63,8 @@ internal fun viewModeLabel(mode: ViewMode): String = when (mode) {
     ViewMode.MONTH_FULL -> stringResource(R.string.view_month_full)
     ViewMode.YEAR -> stringResource(R.string.view_year)
     ViewMode.INSIGHTS -> stringResource(R.string.view_insights)
+    ViewMode.TASKS -> stringResource(R.string.view_tasks)
+    ViewMode.CONTACTS -> stringResource(R.string.view_contacts)
 }
 
 /**

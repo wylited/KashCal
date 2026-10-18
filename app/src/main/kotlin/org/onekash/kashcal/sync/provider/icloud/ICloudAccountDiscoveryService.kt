@@ -214,7 +214,8 @@ class ICloudAccountDiscoveryService @Inject constructor(
                     val updated = existingCalendar.copy(
                         displayName = calDavCalendar.displayName,
                         color = parseColor(calDavCalendar.color, index),
-                        isReadOnly = calDavCalendar.isReadOnly
+                        isReadOnly = calDavCalendar.isReadOnly,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     calendarRepository.updateCalendar(updated)
                     updated
@@ -228,7 +229,8 @@ class ICloudAccountDiscoveryService @Inject constructor(
                         ctag = null,  // Don't store ctag - first sync must fetch events
                         isReadOnly = calDavCalendar.isReadOnly,
                         isDefault = isFirst, // The first created calendar is the default
-                        isVisible = true
+                        isVisible = true,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     val calendarId = calendarRepository.createCalendar(newCalendar)
                     isFirst = false
@@ -405,7 +407,8 @@ class ICloudAccountDiscoveryService @Inject constructor(
                         displayName = calDavCalendar.displayName,
                         color = ServerColorParser.parseCaldavColorToArgb(calDavCalendar.color)
                             ?: existingCalendar.color,
-                        isReadOnly = calDavCalendar.isReadOnly
+                        isReadOnly = calDavCalendar.isReadOnly,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     calendarRepository.updateCalendar(updated)
                     updated
@@ -418,7 +421,8 @@ class ICloudAccountDiscoveryService @Inject constructor(
                         ctag = null, // Must be null so first sync does a full pull
                         isReadOnly = calDavCalendar.isReadOnly,
                         isDefault = false,
-                        isVisible = true
+                        isVisible = true,
+                        components = Calendar.componentsFrom(calDavCalendar.supportedComponents)
                     )
                     val calendarId = calendarRepository.createCalendar(newCalendar)
                     newCalendar.copy(id = calendarId)

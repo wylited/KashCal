@@ -18,9 +18,11 @@ import org.onekash.kashcal.data.db.dao.IcsSubscriptionsDao
 import org.onekash.kashcal.data.db.dao.OccurrencesDao
 import org.onekash.kashcal.data.db.dao.PendingCancelsDao
 import org.onekash.kashcal.data.db.dao.PendingOperationsDao
+import org.onekash.kashcal.data.db.dao.PendingTaskOperationsDao
 import org.onekash.kashcal.data.db.dao.RecentChangesDao
 import org.onekash.kashcal.data.db.dao.ScheduledRemindersDao
 import org.onekash.kashcal.data.db.dao.SyncLogsDao
+import org.onekash.kashcal.data.db.dao.TasksDao
 import org.onekash.kashcal.data.db.entity.Account
 import org.onekash.kashcal.data.db.entity.AddressBook
 import org.onekash.kashcal.data.db.entity.Attendee
@@ -32,9 +34,12 @@ import org.onekash.kashcal.data.db.entity.IcsSubscription
 import org.onekash.kashcal.data.db.entity.Occurrence
 import org.onekash.kashcal.data.db.entity.PendingCancel
 import org.onekash.kashcal.data.db.entity.PendingOperation
+import org.onekash.kashcal.data.db.entity.PendingTaskOperation
 import org.onekash.kashcal.data.db.entity.RecentChange
 import org.onekash.kashcal.data.db.entity.ScheduledReminder
 import org.onekash.kashcal.data.db.entity.SyncLog
+import org.onekash.kashcal.data.db.entity.Task
+import org.onekash.kashcal.data.db.entity.TaskFts
 
 /**
  * Stores the Room-backed calendar data offline-first: local, iCloud, CalDAV and ICS
@@ -53,9 +58,12 @@ import org.onekash.kashcal.data.db.entity.SyncLog
  * - occurrences: materialized RRULE expansions
  * - pending_cancels: removed attendees awaiting an iTIP CANCEL
  * - pending_operations: sync queue
+ * - pending_task_operations: task sync queue
  * - recent_changes: what CalDAV and iCloud pulls changed, for the Recent changes sheet
  * - scheduled_reminders: alarms scheduled for reminder notifications
  * - sync_logs: sync debug and audit trail
+ * - tasks: VTODO tasks
+ * - tasks_fts: FTS4 search index over tasks
  *
  * @see <a href="https://developer.android.com/training/data-storage/room">Room Documentation</a>
  */
@@ -72,11 +80,14 @@ import org.onekash.kashcal.data.db.entity.SyncLog
         Occurrence::class,
         PendingCancel::class,
         PendingOperation::class,
+        PendingTaskOperation::class,
         RecentChange::class,
         ScheduledReminder::class,
-        SyncLog::class
+        SyncLog::class,
+        Task::class,
+        TaskFts::class
     ],
-    version = 26,
+    version = 27,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 3, to = 4)
@@ -98,6 +109,10 @@ abstract class KashCalDatabase : RoomDatabase() {
     abstract fun attendeesDao(): AttendeesDao
 
     abstract fun pendingOperationsDao(): PendingOperationsDao
+
+    abstract fun tasksDao(): TasksDao
+
+    abstract fun pendingTaskOperationsDao(): PendingTaskOperationsDao
 
     abstract fun pendingCancelsDao(): PendingCancelsDao
 

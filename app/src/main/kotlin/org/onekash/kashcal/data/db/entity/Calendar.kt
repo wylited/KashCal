@@ -115,5 +115,46 @@ data class Calendar(
      * ([org.onekash.kashcal.data.db.migration.Migrations.MIGRATION_24_25]).
      */
     @ColumnInfo(name = "initial_pull_done", defaultValue = "0")
-    val initialPullDone: Boolean = false
-)
+    val initialPullDone: Boolean = false,
+
+    /**
+     * The components this collection stores, a comma-joined uppercase set of "VEVENT" and/or
+     * "VTODO", from the server's supported-calendar-component-set. "VEVENT" when a probe
+     * returned nothing (the pre-VTODO behavior); local lists take "VEVENT,VTODO".
+     */
+    @ColumnInfo(name = "components", defaultValue = "'VEVENT'")
+    val components: String = "VEVENT",
+
+    /**
+     * Whether the calendar's items show in the Agenda and Tasks surfaces, independent of the
+     * schedule visibility [isVisible] (#view-split): a calendar can keep its events on the
+     * schedule while its tasks stay off the agenda, or the other way round.
+     */
+    @ColumnInfo(name = "is_agenda_visible", defaultValue = "1")
+    val isAgendaVisible: Boolean = true
+) {
+    /** True when the collection stores VEVENTs; event pickers filter on this. */
+    val supportsEvents: Boolean
+        get() = "VEVENT" in components.split(',')
+
+    /** True when the collection stores VTODOs; task pickers and task sync filter on this. */
+    val supportsVTodo: Boolean
+        get() = "VTODO" in components.split(',')
+
+    companion object {
+        /**
+         * Builds the [components] string from a server's supported-calendar-component-set:
+         * the set's VEVENT/VTODO members, upper-cased and comma-joined; "VEVENT" when the
+         * probe returned nothing, matching the pre-VTODO behavior.
+         */
+        fun componentsFrom(supported: Set<String>): String {
+            val kept = supported.asSequence()
+                .map { it.uppercase() }
+                .filter { it == "VEVENT" || it == "VTODO" }
+                .distinct()
+                .sorted()
+                .toList()
+            return kept.ifEmpty { listOf("VEVENT") }.joinToString(",")
+        }
+    }
+}

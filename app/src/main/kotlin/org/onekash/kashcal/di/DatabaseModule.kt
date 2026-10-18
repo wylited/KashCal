@@ -23,8 +23,10 @@ import org.onekash.kashcal.data.db.dao.IcsSubscriptionsDao
 import org.onekash.kashcal.data.db.dao.OccurrencesDao
 import org.onekash.kashcal.data.db.dao.PendingCancelsDao
 import org.onekash.kashcal.data.db.dao.PendingOperationsDao
+import org.onekash.kashcal.data.db.dao.PendingTaskOperationsDao
 import org.onekash.kashcal.data.db.dao.ScheduledRemindersDao
 import org.onekash.kashcal.data.db.dao.SyncLogsDao
+import org.onekash.kashcal.data.db.dao.TasksDao
 import org.onekash.kashcal.data.db.entity.Category
 import org.onekash.kashcal.data.db.migration.Migrations
 import javax.inject.Singleton
@@ -171,6 +173,18 @@ object DatabaseModule {
     @Singleton
     fun providePendingOperationsDao(database: KashCalDatabase): PendingOperationsDao {
         return database.pendingOperationsDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideTasksDao(database: KashCalDatabase): TasksDao {
+        return database.tasksDao()
+    }
+
+    @Provides
+    @Singleton
+    fun providePendingTaskOperationsDao(database: KashCalDatabase): PendingTaskOperationsDao {
+        return database.pendingTaskOperationsDao()
     }
 
     @Provides

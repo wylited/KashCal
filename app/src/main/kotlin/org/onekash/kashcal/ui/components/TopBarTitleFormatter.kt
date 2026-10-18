@@ -54,6 +54,8 @@ object TopBarTitleFormatter {
                 ).format(date)
             }
             ViewMode.INSIGHTS -> ""
+            ViewMode.TASKS -> ""
+            ViewMode.CONTACTS -> ""
         }
     }
 }

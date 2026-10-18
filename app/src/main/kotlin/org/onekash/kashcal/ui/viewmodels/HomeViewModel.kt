@@ -891,7 +891,9 @@ class HomeViewModel(
                 ViewMode.MONTH -> {} // goToToday() below handles dot loading + day selection
                 ViewMode.MONTH_FULL -> setMonthGridKey(MonthKey(_uiState.value.viewingYear, _uiState.value.viewingMonth))
                 ViewMode.YEAR -> loadYearDots(_uiState.value.viewingYear)
+                ViewMode.TASKS -> {}
                 ViewMode.INSIGHTS -> {}
+                ViewMode.CONTACTS -> {}
             }
 
             // Event dots for the current month +/- 6 months.
@@ -1752,7 +1754,9 @@ class HomeViewModel(
                 _uiState.update { it.copy(pendingNavigateToToday = true) }
             }
             ViewMode.PLANNER -> goToTodayPlanner()
+            ViewMode.TASKS -> {}
             ViewMode.INSIGHTS -> {}
+            ViewMode.CONTACTS -> {}
         }
     }
 
@@ -2789,15 +2793,18 @@ class HomeViewModel(
         val oldMode = _uiState.value.viewMode
         if (oldMode == mode) return
 
+        // Drawer-only surfaces (Insights, Contacts) never persist and never seed the
+        // back-navigation target.
+        val drawerOnly = mode == ViewMode.INSIGHTS || mode == ViewMode.CONTACTS
         _uiState.update {
-            if (mode == ViewMode.INSIGHTS) {
+            if (drawerOnly) {
                 it.copy(viewMode = mode)
             } else {
                 it.copy(viewMode = mode, previousNonInsightsMode = mode)
             }
         }
 
-        if (mode == ViewMode.INSIGHTS) return
+        if (drawerOnly) return
 
         // Best effort: a DataStore setter throw must never crash Looper.main.
         if (persist) {
@@ -2845,7 +2852,9 @@ class HomeViewModel(
                 loadYearDots(_uiState.value.viewingYear)
             }
             ViewMode.PLANNER -> enterPlanner()
+            ViewMode.TASKS -> {}
             ViewMode.INSIGHTS -> {}
+            ViewMode.CONTACTS -> {}
         }
     }
 

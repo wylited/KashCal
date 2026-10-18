@@ -2233,11 +2233,95 @@ class MigrationTest {
         assertTrue(columnExists("events", "import_source"))
     }
 
+    // ==================== Migration 26 -> 27 ====================
+
+    private fun migrateUpToV26() {
+        migrateUpToV25()
+        Migrations.MIGRATION_25_26.migrate(db)
+    }
+
+    @Test
+    fun `migration 26 to 27 creates the task tables with their indexes`() {
+        migrateUpToV26()
+
+        Migrations.MIGRATION_26_27.migrate(db)
+
+        assertTrue(tableExists("tasks"))
+        assertTrue(tableExists("pending_task_operations"))
+        assertTrue(tableExists("tasks_fts"))
+        assertTrue(columnExists("tasks", "priority"))
+        assertTrue(columnExists("tasks", "percent_complete"))
+        assertTrue(columnExists("tasks", "unknown_lines"))
+        assertTrue(columnExists("pending_task_operations", "next_retry_at"))
+        db.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tasks'"
+        ).use { c ->
+            val names = generateSequence { if (c.moveToNext()) c.getString(0) else null }.toSet()
+            assertTrue("unique (calendar_id, uid) index", "index_tasks_calendar_id_uid" in names)
+            assertTrue("due_ts index", "index_tasks_due_ts" in names)
+        }
+    }
+
+    @Test
+    fun `migration 26 to 27 defaults calendars to VEVENT and local lists to both`() {
+        migrateUpToV26()
+        seedV24Calendars()
+        db.execSQL(
+            "INSERT INTO accounts (id, provider, email, created_at) VALUES (50, 'LOCAL', 'local@device', 0)"
+        )
+        db.execSQL(
+            "INSERT INTO calendars (id, account_id, caldav_url, display_name, color) " +
+                "VALUES (9, 50, 'local://lists', 'Local list', -1)"
+        )
+
+        Migrations.MIGRATION_26_27.migrate(db)
+
+        db.query("SELECT components, is_agenda_visible FROM calendars WHERE id = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("a server calendar keeps VEVENT until the next probe", "VEVENT", c.getString(0))
+            assertEquals(1, c.getInt(1))
+        }
+        db.query("SELECT components FROM calendars WHERE id = 9").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("a local list accepts both components", "VEVENT,VTODO", c.getString(0))
+        }
+    }
+
+    @Test
+    fun `migration 26 to 27 is idempotent`() {
+        migrateUpToV26()
+
+        Migrations.MIGRATION_26_27.migrate(db)
+        db.execSQL(
+            "INSERT INTO tasks (id, uid, calendar_id, summary, status, priority, sequence, sync_status, " +
+                "due_is_all_day, dtstamp, created_at, updated_at) " +
+                "VALUES (1, 'u1', 1, 'Kept', 'NEEDS_ACTION', 0, 0, 'SYNCED', 0, 5, 0, 0)"
+        )
+        Migrations.MIGRATION_26_27.migrate(db)
+
+        db.query("SELECT summary, status FROM tasks WHERE id = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("a re-run keeps the rows", "Kept", c.getString(0))
+            assertEquals("NEEDS_ACTION", c.getString(1))
+        }
+    }
+
+    @Test
+    fun `full migration chain 1 to 27 executes without error`() {
+        migrateUpToV26()
+
+        Migrations.MIGRATION_26_27.migrate(db)
+
+        assertTrue(tableExists("tasks"))
+        assertTrue(columnExists("calendars", "components"))
+        assertTrue(columnExists("calendars", "is_agenda_visible"))
+    }
+
     // ==================== Migration Chain/Registry Tests ====================
 
     @Test
     fun `all migrations array contains expected migrations`() {
-        assertEquals(24, Migrations.ALL_MIGRATIONS.size)
+        assertEquals(25, Migrations.ALL_MIGRATIONS.size)
     }
 
     @Test
@@ -2292,6 +2376,8 @@ class MigrationTest {
         assertEquals(25, migrations[22].endVersion)
         assertEquals(25, migrations[23].startVersion)
         assertEquals(26, migrations[23].endVersion)
+        assertEquals(26, migrations[24].startVersion)
+        assertEquals(27, migrations[24].endVersion)
     }
 
     @Test

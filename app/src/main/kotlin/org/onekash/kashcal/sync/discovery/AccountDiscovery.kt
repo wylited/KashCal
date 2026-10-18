@@ -80,7 +80,8 @@ data class DiscoveredCalendar(
     val href: String,
     val displayName: String,
     val color: Int,
-    val supportsEvents: Boolean = true,
+    /** Whether the collection advertises VTODO, so tasks can sync with it. */
+    val supportsVTodo: Boolean = false,
     val isReadOnly: Boolean = false
 )
 
