@@ -101,6 +101,12 @@ class TasksDaoTest {
     fun `observeAllScheduleVisible returns only schedule-visible calendars`() = runTest {
         tasksDao.insert(task(scheduleOnlyCalendarId, "uid-1", "On schedule"))
         tasksDao.insert(task(agendaOnlyCalendarId, "uid-2", "Agenda only"))
+        tasksDao.insert(
+            task(
+                scheduleOnlyCalendarId, "uid-3", "Deleted on schedule",
+                syncStatus = SyncStatus.PENDING_DELETE
+            )
+        )
 
         val schedule = tasksDao.observeAllScheduleVisible().first()
 
@@ -111,6 +117,12 @@ class TasksDaoTest {
     fun `observeAllAgendaVisible returns only agenda-visible calendars`() = runTest {
         tasksDao.insert(task(scheduleOnlyCalendarId, "uid-1", "On schedule"))
         tasksDao.insert(task(agendaOnlyCalendarId, "uid-2", "Agenda only"))
+        tasksDao.insert(
+            task(
+                agendaOnlyCalendarId, "uid-3", "Deleted on agenda",
+                syncStatus = SyncStatus.PENDING_DELETE
+            )
+        )
 
         val agenda = tasksDao.observeAllAgendaVisible().first()
 

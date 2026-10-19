@@ -548,7 +548,7 @@ private fun UpcomingTasksHeader() {
     }
 }
 
-/** Shows one open task; tapping opens the app at today, as the footer row does. */
+/** Shows one open task; tapping opens its Quick View, like a Tasks widget row. */
 @Composable
 private fun UpcomingTaskRow(
     task: WidgetDataRepository.WidgetTask,
@@ -562,7 +562,7 @@ private fun UpcomingTaskRow(
                 horizontal = WIDGET_HORIZONTAL_MARGIN_DP.dp,
                 vertical = eventRowVerticalPaddingDp(detailedRows).dp
             )
-            .clickable(actionStartActivity<MainActivity>(parameters = footerActionParameters())),
+            .clickable(actionStartActivity<MainActivity>(parameters = taskActionParameters(task.taskId))),
         verticalAlignment = Alignment.CenterVertically
     ) {
         TaskRowInner(task, System.currentTimeMillis(), timePattern, detailedRows)

@@ -479,6 +479,10 @@ class TaskPushStrategy @Inject constructor(
     /**
      * Resolves a 412 server-wins: the operation is abandoned and the task row returns to
      * SYNCED, so the next pull stops skipping it as pending-local and applies the server copy.
+     * A refused MOVE first re-parks the row on its source calendar at the source URL: the
+     * target PUT never landed, so the server copy still lives at the source — left under the
+     * target calendar, the row would match no resource at either end and double-ingest
+     * instead of heal.
      */
     private suspend fun abandonOnConflict(
         operation: PendingTaskOperation,
@@ -487,7 +491,26 @@ class TaskPushStrategy @Inject constructor(
     ) {
         val now = System.currentTimeMillis()
         pendingTaskOperationsDao.markAbandoned(operation.id, "Conflict: server has newer version", now)
-        task?.let { tasksDao.markSynced(it.id, etag = null, now) }
+        task?.let {
+            if (operation.operation == PendingTaskOperation.OPERATION_MOVE &&
+                operation.sourceCalendarId != null
+            ) {
+                // [task] is the pre-push row, so this also undoes processMove's SEQUENCE bump
+                // that never reached the server; the null etag makes the source pull refetch.
+                tasksDao.update(
+                    it.copy(
+                        calendarId = operation.sourceCalendarId!!,
+                        caldavUrl = operation.targetUrl ?: it.caldavUrl,
+                        syncStatus = SyncStatus.SYNCED,
+                        etag = null,
+                        serverModifiedAt = now,
+                        updatedAt = now
+                    )
+                )
+            } else {
+                tasksDao.markSynced(it.id, etag = null, now)
+            }
+        }
         warnings.add(
             "Task push ${operationName(operation.operation)} conflict (412) for ${filenameOf(task?.caldavUrl)}"
         )

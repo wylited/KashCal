@@ -13,7 +13,7 @@ And the views themselves stopped being a fixed menu. Settings has a new Views pa
 - Added two-way sync for task lists (VTODO): iCloud Reminders and generic `/tasks/` collections on CalDAV servers now sync their to-dos both ways, with an offline push queue that retries and lets the server's copy win when both sides changed
 - Added the Tasks view, grouping your tasks under Overdue, Today, Tomorrow, This week, Later, No date and Completed, with status and priority filters and create, edit, complete, delete and move
 - Added open tasks to the Agenda under the day they're due, overdue ones in today's group, with a setting to show completed ones too
-- Added tasks due that day to Week and Day views
+- Added tasks due that day to Week, 3-day and Day views
 - Added a small badge on Month days that have tasks due, with a setting to turn it off
 - Added open tasks due that day to the Planner's day boxes, counted into the `+N` overflow
 - Added task results to search, under the event matches
@@ -23,7 +23,7 @@ And the views themselves stopped being a fixed menu. Settings has a new Views pa
 - Added contact detail: call, email or map an address, and edit or delete the contact in place
 - Added `View contact` on birthday and anniversary events, opening the person they belong to
 - Added a `Views` page to Settings under Appearance: drag the calendar views into your own order and untick the ones you don't use
-- Added per-view options: hide weekends in Week and Planner, week numbers in Month and Agenda, completed tasks in the Agenda, and task badges in the Month
+- Added per-view options: hide weekends in Week and Planner, completed tasks in the Agenda, and task badges in the Month; the Views options also carry a week-numbers toggle per view, which is the same week-numbers preference as Display settings'
 - Changed calendar visibility in the drawer into a split: each calendar can now be shown or hidden in the schedule and in Agenda and Tasks separately
 - Changed the local database to version 27, with new storage for tasks, their sync queue and per-calendar agenda visibility
 

@@ -42,21 +42,31 @@ interface TasksDao {
     @Query("SELECT * FROM tasks WHERE calendar_id = :calendarId")
     suspend fun getAllForCalendar(calendarId: Long): List<Task>
 
-    /** Observes every task of calendars visible on the schedule ([Calendar.isVisible]). */
+    /**
+     * Observes every task of calendars visible on the schedule ([Calendar.isVisible]), without
+     * PENDING_DELETE rows — a soft-deleted task disappears at once, not when its server delete
+     * is pushed.
+     */
     @Query("""
         SELECT tasks.* FROM tasks
         JOIN calendars ON calendars.id = tasks.calendar_id
         WHERE calendars.is_visible = 1
+        AND tasks.sync_status != 'PENDING_DELETE'
         ORDER BY (tasks.due_ts IS NULL AND tasks.dt_start_ts IS NULL),
                  COALESCE(tasks.due_ts, tasks.dt_start_ts) ASC
     """)
     fun observeAllScheduleVisible(): Flow<List<Task>>
 
-    /** Observes every task of agenda-visible calendars ([Calendar.isAgendaVisible]). */
+    /**
+     * Observes every task of agenda-visible calendars ([Calendar.isAgendaVisible]), without
+     * PENDING_DELETE rows — a soft-deleted task disappears at once, not when its server delete
+     * is pushed.
+     */
     @Query("""
         SELECT tasks.* FROM tasks
         JOIN calendars ON calendars.id = tasks.calendar_id
         WHERE calendars.is_agenda_visible = 1
+        AND tasks.sync_status != 'PENDING_DELETE'
         ORDER BY (tasks.due_ts IS NULL AND tasks.dt_start_ts IS NULL),
                  COALESCE(tasks.due_ts, tasks.dt_start_ts) ASC
     """)

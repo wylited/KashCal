@@ -177,9 +177,6 @@ object PreferencesKeys {
     /** Per-view option: the Week and Planner grids drop Saturday and Sunday (default false). */
     val VIEW_OPT_HIDE_WEEKENDS = booleanPreferencesKey("view_opt_hide_weekends")
 
-    /** Per-view option: a week-number column or caption on the Month and Agenda views. */
-    val VIEW_OPT_WEEK_NUMBERS = booleanPreferencesKey("view_opt_week_numbers")
-
     /** Per-view option: the Agenda view also lists completed tasks (default false). */
     val VIEW_OPT_AGENDA_COMPLETED_TASKS = booleanPreferencesKey("view_opt_agenda_completed_tasks")
 

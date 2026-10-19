@@ -80,8 +80,12 @@ data class DiscoveredCalendar(
     val href: String,
     val displayName: String,
     val color: Int,
-    /** Whether the collection advertises VTODO, so tasks can sync with it. */
-    val supportsVTodo: Boolean = false,
+    /**
+     * The collection's probed supported-calendar-component-set, "VEVENT" and/or "VTODO" (case
+     * as the server sent it). Defaults to VEVENT-only, the pre-probe assumption; persistence
+     * normalizes case and emptiness via Calendar.componentsFrom.
+     */
+    val supportedComponents: Set<String> = setOf("VEVENT"),
     val isReadOnly: Boolean = false
 )
 

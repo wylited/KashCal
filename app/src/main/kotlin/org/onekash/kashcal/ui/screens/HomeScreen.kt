@@ -124,6 +124,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -136,6 +137,7 @@ import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.coroutines.launch
 import org.onekash.kashcal.R
 import org.onekash.kashcal.data.db.entity.Event
+import org.onekash.kashcal.data.db.entity.Calendar
 import org.onekash.kashcal.data.db.entity.Occurrence
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.EmojiMatcher
@@ -162,6 +164,10 @@ import org.onekash.kashcal.ui.components.DayViewWeekStrip
 import org.onekash.kashcal.ui.components.AgendaWeekBarLogic
 import org.onekash.kashcal.ui.components.buildAgendaListModel
 import org.onekash.kashcal.ui.components.resolveScrollTargetIndex
+import org.onekash.kashcal.ui.components.TaskCheckboxGlyph
+import org.onekash.kashcal.ui.components.taskDueLabel
+import org.onekash.kashcal.ui.components.taskIsOverdue
+import org.onekash.kashcal.ui.components.taskPriorityColor
 import org.onekash.kashcal.ui.components.TopBarTitleAction
 import org.onekash.kashcal.ui.components.TopBarTitleFormatter
 import org.onekash.kashcal.ui.components.YearOverlay
@@ -327,6 +333,11 @@ fun HomeScreen(
     onToggleTaskDone: (Task) -> Unit = {},
     onTaskClick: (Task) -> Unit = {},
     onNewTask: () -> Unit = {},
+    // Task integration: the Views setting gates and the planner's day-box task rows
+    showAgendaCompletedTasks: Boolean = false,
+    showMonthTaskBadges: Boolean = true,
+    plannerTasks: ImmutableMap<Int, ImmutableList<Task>> = persistentMapOf(),
+    onDrawerToggleCalendarAgendaVisibility: (Long) -> Unit = {},
 ) {
     // Month pager, about 100 years each direction
     val initialPage = MonthPagerUtils.INITIAL_PAGE
@@ -569,6 +580,9 @@ fun HomeScreen(
                 },
                 onToggleCalendar = onDrawerToggleCalendar,
                 onToggleDeviceCalendarVisibility = onDrawerToggleDeviceCalendarVisibility,
+                // The per-calendar agenda eye: hides the calendar's events and tasks from the
+                // Agenda and Tasks surfaces only.
+                onAgendaVisibilityToggle = onDrawerToggleCalendarAgendaVisibility,
                 onSettingsClick = {
                     drawerScope.launch { drawerState?.close() }
                     onSettingsClick()
@@ -675,13 +689,18 @@ fun HomeScreen(
                         uiState.isSearchActive && uiState.searchQuery.isNotEmpty() -> {
                             SearchContent(
                                 results = uiState.searchResults,
+                                taskResults = uiState.searchTaskResults,
+                                calendars = uiState.calendars,
                                 currentFilter = uiState.searchDateFilter,
+                                todayDayCode = todayDayCode,
                                 showEventEmojis = uiState.showEventEmojis,
                                 timePattern = timePattern,
                                 onResultClick = onSearchResultClick,
                                 onDeviceEventClick = onDeviceEventClick,
                                 onFilterSelect = onSearchDateFilterChange,
-                                onCustomDateClick = onSearchShowDatePicker
+                                onCustomDateClick = onSearchShowDatePicker,
+                                onTaskClick = onTaskClick,
+                                onToggleTaskDone = onToggleTaskDone
                             )
                         }
                         uiState.viewMode == ViewMode.INSIGHTS -> {
@@ -756,7 +775,14 @@ fun HomeScreen(
                                                     agendaBarHeldAnchor = DayPagerUtils.dayCodeToLocalDate(tappedDayCode)
                                                     agendaBarSuppressed = true
                                                     val generation = ++agendaTapGeneration
-                                                    val model = buildAgendaListModel(agendaEvents.events, todayDayCode)
+                                                    // The same arguments the list builds its model
+                                                    // with, so the flat header indexes match.
+                                                    val model = buildAgendaListModel(
+                                                        agendaEvents.events,
+                                                        tasks,
+                                                        todayDayCode,
+                                                        showAgendaCompletedTasks
+                                                    )
                                                     val target = resolveScrollTargetIndex(tappedDayCode, model)
                                                     coroutineScope.launch {
                                                         try {
@@ -790,13 +816,24 @@ fun HomeScreen(
                                                 CircularProgressIndicator()
                                             }
                                         } else {
-                                            val agendaModel = remember(agendaEvents.events, todayDayCode) {
-                                                buildAgendaListModel(agendaEvents.events, todayDayCode)
+                                            val agendaModel = remember(
+                                                agendaEvents.events,
+                                                tasks,
+                                                todayDayCode,
+                                                showAgendaCompletedTasks
+                                            ) {
+                                                buildAgendaListModel(
+                                                    agendaEvents.events,
+                                                    tasks,
+                                                    todayDayCode,
+                                                    showAgendaCompletedTasks
+                                                )
                                             }
                                             AgendaContent(
                                                 model = agendaModel,
                                                 todayDayCode = todayDayCode,
                                                 listState = agendaListState,
+                                                calendars = uiState.calendars,
                                                 showEventEmojis = uiState.showEventEmojis,
                                                 timePattern = timePattern,
                                                 onEventClick = { displayEvent ->
@@ -804,7 +841,9 @@ fun HomeScreen(
                                                         is DisplayEvent.Room -> onEventClick(displayEvent.event, displayEvent.occurrence.startTs)
                                                         is DisplayEvent.Device -> onDeviceEventClick(displayEvent)
                                                     }
-                                                }
+                                                },
+                                                onTaskClick = onTaskClick,
+                                                onToggleTaskDone = onToggleTaskDone
                                             )
                                         }
                                     }
@@ -844,6 +883,11 @@ fun HomeScreen(
                                         WeekViewContent(
                                             timedEvents = weekEvents.timedEvents,
                                             allDayEvents = weekEvents.allDayEvents,
+                                            timedTasks = weekEvents.timedTasks,
+                                            taskColorById = remember(uiState.calendars) {
+                                                uiState.calendars.associate { it.id to it.color }
+                                            },
+                                            onTaskClick = onTaskClick,
                                             isLoading = weekEvents.isLoading,
                                             error = weekEvents.error,
                                             scrollPosition = uiState.weekViewScrollPosition,
@@ -854,6 +898,7 @@ fun HomeScreen(
                                             timePattern = timePattern,
                                             visibleDays = uiState.viewMode.visibleDays ?: 3,
                                             firstDayOfWeek = uiState.firstDayOfWeek,
+                                            hideWeekends = uiState.hideWeekends,
                                             weekLabelPrefix = weekLabelPrefix,
                                             allDayRowsExpanded = uiState.allDayRowsExpanded,
                                             onAllDayRowsToggle = onAllDayRowsToggle,
@@ -914,10 +959,15 @@ fun HomeScreen(
                         uiState.viewMode == ViewMode.PLANNER -> {
                             PlannerView(
                                 plannerState = plannerState,
+                                tasksByDayCode = plannerTasks,
+                                calendarColorById = remember(uiState.calendars) {
+                                    uiState.calendars.associate { it.id to it.color }
+                                },
                                 anchorDayCode = uiState.plannerAnchorDayCode,
                                 pagerPosition = uiState.plannerWeekPagerPosition,
                                 pendingNavigateToPage = uiState.pendingPlannerPagerPosition,
                                 firstDayOfWeek = uiState.firstDayOfWeek,
+                                hideWeekends = uiState.hideWeekends,
                                 todayDayCode = todayDayCode,
                                 nowMs = nowMs,
                                 timePattern = timePattern,
@@ -955,11 +1005,18 @@ fun HomeScreen(
                                 val pageYear = pageCal.get(JavaCalendar.YEAR)
                                 val pageMonth = pageCal.get(JavaCalendar.MONTH)
 
+                                val pageTaskBadges = remember(uiState.monthTaskBadges, pageYear, pageMonth) {
+                                    uiState.getMonthTaskBadges(pageYear, pageMonth)
+                                        .mapKeys { (day, _) -> pageYear * 10000 + (pageMonth + 1) * 100 + day }
+                                }
+
                                 MonthFullPage(
                                     year = pageYear,
                                     month = pageMonth,
                                     selectedDate = uiState.selectedDate,
                                     monthEventsMap = monthEvents,
+                                    tasksByDayCode = pageTaskBadges,
+                                    showTaskRows = showMonthTaskBadges,
                                     onDateSelected = { dateMs ->
                                         onDateSelected(dateMs)
                                         onShowDayDetail(dateMs)
@@ -1005,6 +1062,8 @@ fun HomeScreen(
                                         month = pageMonth,
                                         selectedDate = uiState.selectedDate,
                                         eventDots = uiState.eventDots,
+                                        taskBadges = uiState.getMonthTaskBadges(pageYear, pageMonth),
+                                        showTaskBadges = showMonthTaskBadges,
                                         onDateSelected = onDateSelected,
                                         firstDayOfWeekPref = uiState.firstDayOfWeek,
                                         refreshKey = refreshKey,
@@ -1680,6 +1739,8 @@ private fun CalendarGrid(
     month: Int,
     selectedDate: Long,
     eventDots: ImmutableMap<String, ImmutableMap<Int, ImmutableList<Int>>>,
+    taskBadges: ImmutableMap<Int, ImmutableList<Task>>,
+    showTaskBadges: Boolean,
     onDateSelected: (Long) -> Unit,
     firstDayOfWeekPref: Int = java.util.Calendar.SUNDAY,
     refreshKey: Int = 0,
@@ -1693,6 +1754,7 @@ private fun CalendarGrid(
     }
     val monthKey = remember(year, month) { String.format(java.util.Locale.ROOT, "%04d-%02d", year, month + 1) }
     val monthDots = remember(eventDots, monthKey) { eventDots[monthKey].orEmpty() }
+    val monthTasks = taskBadges
 
     val today = remember(refreshKey) { JavaCalendar.getInstance() }
     val selectedCal = JavaCalendar.getInstance().apply { timeInMillis = selectedDate }
@@ -1754,6 +1816,7 @@ private fun CalendarGrid(
                                 year == today.get(JavaCalendar.YEAR)
                             val isSelected = selectedInThisMonth && day == selectedCal.get(JavaCalendar.DAY_OF_MONTH)
                             val dayColors = monthDots[day].orEmpty()
+                            val dayTaskCount = if (showTaskBadges) monthTasks[day].orEmpty().size else 0
 
                             Box(
                                 modifier = Modifier
@@ -1796,8 +1859,11 @@ private fun CalendarGrid(
                                             else -> MaterialTheme.colorScheme.onSurface
                                         }
                                     )
-                                    if (dayColors.isNotEmpty()) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    if (dayColors.isNotEmpty() || dayTaskCount > 0) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             dayColors.take(3).forEach { colorInt ->
                                                 Box(
                                                     modifier = Modifier
@@ -1805,6 +1871,27 @@ private fun CalendarGrid(
                                                         .clip(CircleShape)
                                                         .background(Color(colorInt))
                                                 )
+                                            }
+                                            // The day's open-task count beside the event dots,
+                                            // a filled disc like they are; nothing when the day
+                                            // has none or the Views setting is off.
+                                            if (dayTaskCount > 0) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(CircleShape)
+                                                        .background(MaterialTheme.colorScheme.primary),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = dayTaskCount.toString(),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontSize = 8.sp,
+                                                        lineHeight = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimary,
+                                                        modifier = Modifier.padding(horizontal = 2.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -2157,19 +2244,27 @@ private fun SearchResultCard(
 /**
  * Shows search results under four date filter chips: All, Week, Month and a date picker.
  * The chips sit outside the LazyColumn to avoid a crash, in a plain Row without horizontalScroll.
+ * Matching tasks follow the events under a "Tasks" header, open ones before completed; the
+ * date filter doesn't cut them, a task's placement is its due day, not an occurrence range.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchContent(
     results: ImmutableList<SearchResult>,
+    taskResults: ImmutableList<Task>,
+    calendars: List<Calendar>,
     currentFilter: DateFilter,
+    todayDayCode: Int,
     showEventEmojis: Boolean = true,
     timePattern: String = "h:mm a",
     onResultClick: (Event, Long?) -> Unit,
     onDeviceEventClick: (DisplayEvent.Device) -> Unit = {},
     onFilterSelect: (DateFilter) -> Unit,
-    onCustomDateClick: () -> Unit
+    onCustomDateClick: () -> Unit,
+    onTaskClick: (Task) -> Unit = {},
+    onToggleTaskDone: (Task) -> Unit = {}
 ) {
+    val calendarColorById = remember(calendars) { calendars.associate { it.id to it.color } }
     Column(modifier = Modifier.fillMaxSize()) {
         // Four chips fit without scrolling
         Row(
@@ -2203,7 +2298,7 @@ private fun SearchContent(
             )
         }
 
-        if (results.isEmpty()) {
+        if (results.isEmpty() && taskResults.isEmpty()) {
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -2253,7 +2348,102 @@ private fun SearchContent(
                         }
                     )
                 }
+                if (taskResults.isNotEmpty()) {
+                    item(key = "search_tasks_header", contentType = "search_section_header") {
+                        Text(
+                            text = stringResource(R.string.view_tasks),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    items(
+                        items = taskResults,
+                        key = { task -> "task_${task.id}" },
+                        contentType = { "search_task" }
+                    ) { task ->
+                        SearchTaskRow(
+                            task = task,
+                            calendarColor = calendarColorById[task.calendarId],
+                            timePattern = timePattern,
+                            todayDayCode = todayDayCode,
+                            modifier = Modifier.animateItem(),
+                            onToggleDone = { onToggleTaskDone(task) },
+                            onClick = { onTaskClick(task) }
+                        )
+                    }
+                }
             }
+        }
+    }
+}
+
+/**
+ * One matching task of the search results: the round checkbox, the summary (struck through when
+ * done), the priority number and the due chip, the Tasks screen's row carrying the search tap.
+ */
+@Composable
+private fun SearchTaskRow(
+    task: Task,
+    calendarColor: Int?,
+    timePattern: String,
+    todayDayCode: Int,
+    modifier: Modifier = Modifier,
+    onToggleDone: () -> Unit,
+    onClick: () -> Unit
+) {
+    val zone = remember { ZoneId.systemDefault() }
+    val color = Color(calendarColor ?: 0xFF6200EE.toInt())
+    val done = task.isDone
+    val overdue = taskIsOverdue(task, todayDayCode, zone)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TaskCheckboxGlyph(
+            isDone = done,
+            color = color,
+            contentDescription = stringResource(
+                if (done) R.string.cd_task_reopen else R.string.cd_task_complete
+            ),
+            onToggle = onToggleDone
+        )
+        Text(
+            text = task.summary,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            textDecoration = if (done) TextDecoration.LineThrough else null,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 10.dp)
+        )
+        if (task.priority in 1..9) {
+            Text(
+                text = task.priority.toString(),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = taskPriorityColor(task.priority),
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+        if (task.whenTs != null) {
+            Text(
+                text = taskDueLabel(task, timePattern, includeDate = true),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                color = when {
+                    overdue -> MaterialTheme.colorScheme.error
+                    done -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(start = 8.dp)
+            )
         }
     }
 }
@@ -2268,7 +2458,9 @@ private val AGENDA_CONTENT_PADDING = 16.dp
 /**
  * Shows the agenda list: the upcoming 90 days of occurrences, grouped under date headers, one
  * card per occurrence. A multi-day event appears on each day it spans with a "Day X of Y" line.
- * Today's and tomorrow's headers add "Today" or "Tomorrow" beside the full date.
+ * Today's and tomorrow's headers add "Today" or "Tomorrow" beside the full date. The day's
+ * tasks interleave between its all-day and timed events, the model's render order, with
+ * overdue open tasks folded into today.
  *
  * The caller precomputes the expansion, dedup and grouping into [model], so the same grouping
  * and header-index map drive both this list and the week bar's tap-to-scroll. [todayDayCode]
@@ -2279,13 +2471,17 @@ private fun AgendaContent(
     model: AgendaListModel,
     todayDayCode: Int,
     listState: LazyListState = rememberLazyListState(),
+    calendars: List<Calendar>,
     showEventEmojis: Boolean = true,
     timePattern: String = "h:mm a",
-    onEventClick: (DisplayEvent) -> Unit
+    onEventClick: (DisplayEvent) -> Unit,
+    onTaskClick: (Task) -> Unit = {},
+    onToggleTaskDone: (Task) -> Unit = {}
 ) {
     val todayLabel = stringResource(R.string.label_today)
     val tomorrowLabel = stringResource(R.string.label_tomorrow)
     val relativeWithDateTemplate = stringResource(R.string.agenda_header_relative_with_date)
+    val calendarColorById = remember(calendars) { calendars.associate { it.id to it.color } }
 
     if (model.groups.isEmpty()) {
         Box(
@@ -2337,8 +2533,63 @@ private fun AgendaContent(
                         )
                     }
                 }
+                // All-day events, then the day's open tasks, then its completed ones (only the
+                // model carries those), then the timed events — the Agenda widget's day order.
                 items(
-                    items = group.items,
+                    items = group.allDayItems,
+                    key = { item ->
+                        when (val de = item.displayEvent) {
+                            is DisplayEvent.Room -> "room_${de.event.id}_${de.occurrence.startTs}_${item.displayDay}"
+                            is DisplayEvent.Device -> "device_${de.instance.instanceId}_${item.displayDay}"
+                        }
+                    },
+                    contentType = { "agenda_card" }
+                ) { item ->
+                    val isPast = item.displayDay < todayDayCode
+                    Column(modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null)) {
+                        AgendaCard(
+                            item = item,
+                            isPast = isPast,
+                            showEventEmojis = showEventEmojis,
+                            timePattern = timePattern,
+                            onClick = { onEventClick(item.displayEvent) }
+                        )
+                    }
+                }
+                items(
+                    items = group.openTasks,
+                    key = { task -> "task_${task.id}_${group.dayCode}" },
+                    contentType = { "agenda_task" }
+                ) { task ->
+                    Column(modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null)) {
+                        AgendaTaskCard(
+                            task = task,
+                            calendarColor = calendarColorById[task.calendarId],
+                            timePattern = timePattern,
+                            todayDayCode = todayDayCode,
+                            onToggleDone = { onToggleTaskDone(task) },
+                            onClick = { onTaskClick(task) }
+                        )
+                    }
+                }
+                items(
+                    items = group.completedTasks,
+                    key = { task -> "task_${task.id}_${group.dayCode}" },
+                    contentType = { "agenda_task" }
+                ) { task ->
+                    Column(modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null)) {
+                        AgendaTaskCard(
+                            task = task,
+                            calendarColor = calendarColorById[task.calendarId],
+                            timePattern = timePattern,
+                            todayDayCode = todayDayCode,
+                            onToggleDone = { onToggleTaskDone(task) },
+                            onClick = { onTaskClick(task) }
+                        )
+                    }
+                }
+                items(
+                    items = group.timedItems,
                     key = { item ->
                         when (val de = item.displayEvent) {
                             is DisplayEvent.Room -> "room_${de.event.id}_${de.occurrence.startTs}_${item.displayDay}"
@@ -2422,6 +2673,76 @@ private fun AgendaCard(
                         displayEvent.location!!,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+/**
+ * Shows one agenda task card, the event card's calendar-color treatment over the Tasks screen's
+ * row anatomy: the round checkbox leads, the summary follows (struck through when done), and
+ * the placement line shows the due time or the all-day marker. Tap completes or reopens on the
+ * checkbox and opens the task quick view on the card.
+ */
+@Composable
+private fun AgendaTaskCard(
+    task: Task,
+    calendarColor: Int?,
+    timePattern: String = "h:mm a",
+    todayDayCode: Int,
+    onToggleDone: () -> Unit,
+    onClick: () -> Unit
+) {
+    val zone = remember { ZoneId.systemDefault() }
+    val color = Color(calendarColor ?: 0xFF6200EE.toInt())
+    val done = task.isDone
+    val overdue = taskIsOverdue(task, todayDayCode, zone)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (done) 0.55f else 1f)
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.10f)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(modifier = Modifier.height(IntrinsicSize.Min)) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .fillMaxHeight()
+                    .background(color)
+            )
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp).weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TaskCheckboxGlyph(
+                    isDone = done,
+                    color = color,
+                    contentDescription = stringResource(
+                        if (done) R.string.cd_task_reopen else R.string.cd_task_complete
+                    ),
+                    onToggle = onToggleDone
+                )
+                Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
+                    Text(
+                        task.summary,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        textDecoration = if (done) TextDecoration.LineThrough else null
+                    )
+                    Text(
+                        taskDueLabel(task, timePattern),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            overdue -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
             }

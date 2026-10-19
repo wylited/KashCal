@@ -99,6 +99,12 @@ data class TaskFormState(
     val calendarColor: Int? = null,
     /** Read-only display of the loaded rule; recurring tasks are never client-expanded. */
     val rrule: String? = null,
+    /**
+     * True when the edited task's own calendar no longer lists as VTODO-capable. The calendar
+     * stays selected (a silent swap would move the task on save); the sheet surfaces this
+     * flag as a warning instead.
+     */
+    val calendarLostVtodo: Boolean = false,
     val isSaving: Boolean = false,
 ) {
     val isEditMode: Boolean get() = editingTaskId != null
@@ -113,7 +119,10 @@ fun TaskFormState.toDueFields(): Triple<Long?, String?, Boolean> {
     if (!hasDue || dueDateMillis == null) return Triple(null, null, false)
     if (isAllDay) return Triple(DateTimeUtils.localDateToUtcMidnight(dueDateMillis), null, true)
     val zone = dueTimezone.asZoneId() ?: ZoneId.systemDefault()
-    val dueTs = Instant.ofEpochMilli(dueDateMillis).atZone(zone).toLocalDate()
+    // [dueDateMillis] is the picker's device-zone midnight, so the calendar date is read in the
+    // device zone (as [EventFormSheet.resolveFormTime] reads it) and only then placed in the
+    // due's zone — decoding device-midnight in the due's zone shifts a foreign-zone due a day.
+    val dueTs = deviceLocalDate(dueDateMillis)
         .atTime(dueHour, dueMinute)
         .atZone(zone)
         .toInstant()
@@ -148,6 +157,7 @@ fun Task.toTaskFormState(): TaskFormState {
         isAllDay = dueIsAllDay,
         dueTimezone = if (dueIsAllDay || dueTs == null) null else dueTimezone,
         priority = priority,
+        calendarId = calendarId,
         rrule = rrule,
     )
 }
@@ -165,7 +175,9 @@ private fun String?.asZoneId(): ZoneId? =
  * @param calendars the candidate calendars; the sheet lists only `supportsVTodo` ones and
  *   preselects [task]'s calendar on an edit.
  * @param onSave persists the form; on success the sheet closes itself, on failure it stays open
- *   with the user's edits and a re-enabled Save.
+ *   with the user's edits, a re-enabled Save and an inline error line.
+ * @param onSaveError invoked with the save failure when one occurs, so the host can surface it
+ *   on its own channel (a snackbar) in addition to the sheet's inline error line.
  * @param onDelete tears the task down; the row shows only in edit mode and asks twice.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -178,19 +190,25 @@ fun TaskFormSheet(
     firstDayOfWeek: Int = java.util.Calendar.SUNDAY,
     onDismiss: () -> Unit,
     onSave: suspend (TaskFormState) -> Result<Task>,
+    onSaveError: ((Throwable) -> Unit)? = null,
     onDelete: ((Task) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val taskCalendars = remember(calendars) { calendars.filter { it.supportsVTodo } }
     var state by remember(task) {
         mutableStateOf(
-            (task?.toTaskFormState() ?: TaskFormState()).withCalendarResolved(taskCalendars)
+            (task?.toTaskFormState() ?: TaskFormState())
+                .withCalendarResolved(taskCalendars, calendars)
         )
     }
     val initialSnapshot = remember(task) { state }
 
     var isSaving by remember { mutableStateOf(false) }
     var showDiscardConfirm by remember { mutableStateOf(false) }
+    // The save failure the user sees inline until the next attempt; the host's [onSaveError]
+    // receives the throwable too, for its own snackbar channel.
+    var saveError by remember { mutableStateOf<String?>(null) }
+    val saveFailedText = stringResource(R.string.task_save_failed)
     val hasUnsavedChanges = state.copy(isSaving = false) != initialSnapshot.copy(isSaving = false)
 
     // Same state machine as the event form: a clean form dismisses at once, a dirty one asks,
@@ -208,13 +226,18 @@ fun TaskFormSheet(
             val saving = state.copy(isSaving = true)
             state = saving
             isSaving = true
+            saveError = null
             scope.launch {
                 val result = onSave(saving.copy(isSaving = false))
                 if (result.isSuccess) {
                     onDismiss()
                 } else {
                     // Keep the form open with the user's edits for a retry; the mirror of the
-                    // event form's scopeSaveFailedTick path, without the deferral.
+                    // event form's scopeSaveFailedTick path, without the deferral. The failure
+                    // is not silent: the error line renders below and the host is told.
+                    val failure = result.exceptionOrNull()
+                    saveError = failure?.message?.takeIf { it.isNotBlank() } ?: saveFailedText
+                    failure?.let { onSaveError?.invoke(it) }
                     isSaving = false
                     state = saving.copy(isSaving = false)
                 }
@@ -319,6 +342,17 @@ fun TaskFormSheet(
                 }
 
                 HorizontalDivider()
+
+                if (saveError != null) {
+                    Text(
+                        text = saveError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
 
                 Column(
                     modifier = Modifier
@@ -449,11 +483,23 @@ fun TaskFormSheet(
                             state = state.copy(
                                 calendarId = calendar.id,
                                 calendarName = calendar.displayName,
-                                calendarColor = calendar.color
+                                calendarColor = calendar.color,
+                                calendarLostVtodo = false
                             )
                             expandedPicker = null
                         }
                     )
+
+                    if (state.calendarLostVtodo) {
+                        Text(
+                            text = stringResource(R.string.task_calendar_lost_vtodo),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        )
+                    }
 
                     if (state.isEditMode && state.rrule != null) {
                         EventFormRow(
@@ -499,15 +545,38 @@ fun TaskFormSheet(
     }
 }
 
-/** Resolves the calendar fields against [taskCalendars]: the task's own calendar, else the first. */
-private fun TaskFormState.withCalendarResolved(taskCalendars: List<Calendar>): TaskFormState {
-    val selected = calendarId?.let { id -> taskCalendars.firstOrNull { it.id == id } }
-        ?: taskCalendars.firstOrNull()
-        ?: return this
+/**
+ * Resolves the calendar fields. A create preselects the first VTODO calendar; an edit keeps
+ * the task's own calendar selected even when it no longer lists as VTODO-capable — silently
+ * re-homing it would move the task on save — and flags the state with [TaskFormState
+ * .calendarLostVtodo] instead. The lost calendar's display fields come from [allCalendars],
+ * which the caller passes unfiltered.
+ */
+private fun TaskFormState.withCalendarResolved(
+    taskCalendars: List<Calendar>,
+    allCalendars: List<Calendar>
+): TaskFormState {
+    if (calendarId != null) {
+        val own = taskCalendars.firstOrNull { it.id == calendarId }
+        if (own != null) {
+            return copy(
+                calendarName = own.displayName,
+                calendarColor = own.color,
+                calendarLostVtodo = false
+            )
+        }
+        val stored = allCalendars.firstOrNull { it.id == calendarId }
+        return copy(
+            calendarName = stored?.displayName ?: calendarName,
+            calendarColor = stored?.color ?: calendarColor,
+            calendarLostVtodo = true
+        )
+    }
+    val first = taskCalendars.firstOrNull() ?: return this
     return copy(
-        calendarId = selected.id,
-        calendarName = selected.displayName,
-        calendarColor = selected.color
+        calendarId = first.id,
+        calendarName = first.displayName,
+        calendarColor = first.color
     )
 }
 
@@ -533,7 +602,8 @@ private fun dueValueLabel(state: TaskFormState, use24Hour: Boolean): String {
 private fun duePreviewInstant(state: TaskFormState): Long {
     val dueDate = state.dueDateMillis ?: return 0L
     val zone = state.dueTimezone.asZoneId() ?: ZoneId.systemDefault()
-    return Instant.ofEpochMilli(dueDate).atZone(zone).toLocalDate()
+    // Same decode as [TaskFormState.toDueFields]: device-zone date, due-zone wall time.
+    return deviceLocalDate(dueDate)
         .atTime(state.dueHour, state.dueMinute)
         .atZone(zone)
         .toInstant()

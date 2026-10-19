@@ -73,6 +73,8 @@ class PlannerPullToRefreshTest {
                         onDayClick = {},
                         onDayHeaderClick = {},
                         onZoomChange = {},
+                        tasksByDayCode = emptyMap(),
+                        calendarColorById = emptyMap(),
                     )
                 }
             }

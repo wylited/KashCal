@@ -1,7 +1,9 @@
 package org.onekash.kashcal.ui.components
 
 import org.onekash.kashcal.data.db.entity.Occurrence
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
+import java.time.ZoneId
 
 /**
  * One rendered agenda entry. A multi-day event produces one item per day it
@@ -15,20 +17,32 @@ internal data class AgendaDisplayItem(
     val totalDays: Int     // total days in the event (1 for single-day)
 )
 
-/** A day's worth of agenda items under a single date header. */
+/**
+ * A day's worth of agenda items under a single date header, in render order: the all-day
+ * events, then the day's open tasks, then its completed ones (when the caller included them),
+ * then the timed events — the Agenda widget's day ordering.
+ */
 internal data class AgendaDayGroup(
     val dayCode: Int,
+    val allDayItems: List<AgendaDisplayItem>,
+    val openTasks: List<Task>,
+    val completedTasks: List<Task>,
+    val timedItems: List<AgendaDisplayItem>
+) {
+    /** Every event item of the day, all-day before timed. */
     val items: List<AgendaDisplayItem>
-)
+        get() = allDayItems + timedItems
+}
 
 /**
  * The full render model for the agenda LazyColumn: the ordered [groups] and a
  * map from each group's day code to the flat LazyColumn index of its header.
  *
- * The flat layout is, per group, one header item followed by its N card items,
- * so a group's header index is the count of all preceding headers and cards.
- * The LazyColumn must match this layout, with no items before the first header,
- * or [resolveScrollTargetIndex] lands on the wrong item.
+ * The flat layout is, per group, one header item followed by its event cards
+ * and task rows, so a group's header index is the count of all preceding
+ * headers, cards and rows. The LazyColumn must match this layout, with no
+ * items before the first header, or [resolveScrollTargetIndex] lands on the
+ * wrong item.
  */
 internal data class AgendaListModel(
     val groups: List<AgendaDayGroup>,
@@ -38,11 +52,22 @@ internal data class AgendaListModel(
 /**
  * Expands [events] into the agenda render model: splits multi-day events per
  * day, keeps entries from today on, dedups by title, startTs and day, and groups
- * and sorts by day then start time. Pure, so it can run in a `remember`.
+ * and sorts by day then start time, all-day events before timed ones.
+ *
+ * [tasks] interleave per day by their placement day (`due ?? dtstart`): open
+ * tasks sit between the day's all-day and timed events, the completed ones after
+ * the open when [includeCompletedTasks]. Open tasks placing before today render
+ * in today's group, the Agenda widget's overdue fold, so they stay visible; a
+ * completed past-due task is not overdue and drops out with its past day.
+ * Undated tasks render nowhere here — the Tasks screen owns them. Pure, so it
+ * can run in a `remember`.
  */
 internal fun buildAgendaListModel(
     events: List<DisplayEvent>,
-    todayDayCode: Int
+    tasks: List<Task>,
+    todayDayCode: Int,
+    includeCompletedTasks: Boolean = false,
+    zone: ZoneId = ZoneId.systemDefault()
 ): AgendaListModel {
     val expandedItems = events.flatMap { displayEvent ->
         val isMultiDay = displayEvent.endDay > displayEvent.startDay
@@ -66,22 +91,49 @@ internal fun buildAgendaListModel(
         "${item.displayEvent.title}-${item.displayEvent.startTs}-${item.displayDay}"
     }.sortedWith(
         compareBy(
-            { it.displayDay },              // primary: by date
-            { it.displayEvent.startTs }     // secondary: by original start time
+            { it.displayDay },                 // primary: by date
+            { !it.displayEvent.isAllDay },     // secondary: all-day before timed
+            { it.displayEvent.startTs }        // tertiary: by original start time
         )
     )
 
-    val groups = expandedItems
-        .groupBy { it.displayDay }
-        .map { (dayCode, items) -> AgendaDayGroup(dayCode, items) }
-        .sortedBy { it.dayCode }
+    val openTasksByDay = LinkedHashMap<Int, MutableList<Task>>()
+    val completedTasksByDay = LinkedHashMap<Int, MutableList<Task>>()
+    for (task in tasks) {
+        val placementDay = taskPlacementDayCode(task, zone) ?: continue
+        if (task.isDone) {
+            if (includeCompletedTasks && placementDay >= todayDayCode) {
+                completedTasksByDay.getOrPut(placementDay) { mutableListOf() }.add(task)
+            }
+        } else {
+            // Overdue folds into today, matching the Agenda widget's task list.
+            val renderDay = if (placementDay < todayDayCode) todayDayCode else placementDay
+            openTasksByDay.getOrPut(renderDay) { mutableListOf() }.add(task)
+        }
+    }
 
-    // Flat index of each header: sum of (1 header + N cards) for preceding groups.
+    val eventsByDay = expandedItems.groupBy { it.displayDay }
+    val groups = (eventsByDay.keys + openTasksByDay.keys + completedTasksByDay.keys)
+        .distinct()
+        .sorted()
+        .map { dayCode ->
+            val (allDay, timed) = eventsByDay[dayCode].orEmpty().partition { it.displayEvent.isAllDay }
+            AgendaDayGroup(
+                dayCode = dayCode,
+                allDayItems = allDay,
+                openTasks = openTasksByDay[dayCode].orEmpty(),
+                completedTasks = completedTasksByDay[dayCode].orEmpty(),
+                timedItems = timed
+            )
+        }
+
+    // Flat index of each header: sum of (1 header + N cards and rows) for preceding groups.
     val headerIndexByDayCode = LinkedHashMap<Int, Int>()
     var index = 0
     for (group in groups) {
         headerIndexByDayCode[group.dayCode] = index
-        index += 1 + group.items.size
+        index += 1 + group.allDayItems.size + group.openTasks.size +
+            group.completedTasks.size + group.timedItems.size
     }
 
     return AgendaListModel(groups, headerIndexByDayCode)

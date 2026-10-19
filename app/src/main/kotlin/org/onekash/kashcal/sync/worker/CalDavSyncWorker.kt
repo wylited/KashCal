@@ -17,6 +17,7 @@ import org.onekash.kashcal.R
 import org.onekash.kashcal.data.contacts.ContactEventUtils
 import org.onekash.kashcal.data.db.dao.EventsDao
 import org.onekash.kashcal.data.db.dao.PendingOperationsDao
+import org.onekash.kashcal.data.db.dao.PendingTaskOperationsDao
 import org.onekash.kashcal.data.db.dao.SyncLogsDao
 import org.onekash.kashcal.data.db.entity.PendingOperation
 import org.onekash.kashcal.data.preferences.KashCalDataStore
@@ -24,6 +25,7 @@ import org.onekash.kashcal.data.repository.AccountRepository
 import org.onekash.kashcal.data.repository.CalendarRepository
 import org.onekash.kashcal.domain.changes.RecentChangesRecorder
 import org.onekash.kashcal.domain.reader.EventReader
+import org.onekash.kashcal.domain.sync.RetryDelays
 import org.onekash.kashcal.reminder.scheduler.ReminderScheduler
 import org.onekash.kashcal.sync.client.CalDavClientFactory
 import org.onekash.kashcal.sync.engine.CalDavSyncEngine
@@ -58,6 +60,11 @@ import java.util.concurrent.TimeUnit
  * The worker adds its own sync-history entries ([SyncSessionStore]) only for a throw, an account
  * it couldn't set up, or no account to sync. A periodic run (always the all-accounts scope) never
  * returns failure, which would stop the periodic spec for good; the catch in [doWork] says why.
+ *
+ * Every run first recovers both sync queues: operations a crash left IN_PROGRESS return to
+ * PENDING after an hour, a forced full sync re-arms FAILED ones (events' ABANDONED too), and
+ * task operations past [RetryDelays.OPERATION_LIFETIME_MS] are deleted, with the task rows
+ * their DELETE had soft-deleted.
  */
 @HiltWorker
 class CalDavSyncWorker @AssistedInject constructor(
@@ -74,6 +81,7 @@ class CalDavSyncWorker @AssistedInject constructor(
     private val reminderScheduler: ReminderScheduler,
     private val eventReader: EventReader,
     private val pendingOperationsDao: PendingOperationsDao,
+    private val pendingTaskOperationsDao: PendingTaskOperationsDao,
     private val syncSessionStore: SyncSessionStore,
     private val syncLogsDao: SyncLogsDao,
     private val iCloudUrlMigration: ICloudUrlMigration,
@@ -206,6 +214,18 @@ class CalDavSyncWorker @AssistedInject constructor(
                 Log.w(TAG, "Recovered $staleCount stuck IN_PROGRESS operations from previous sync")
             }
 
+            // Same crash recovery for the task queue.
+            val staleTaskCount = run {
+                val oneHourAgo = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(1)
+                pendingTaskOperationsDao.resetStaleInProgress(
+                    cutoff = oneHourAgo,
+                    now = System.currentTimeMillis()
+                )
+            }
+            if (staleTaskCount > 0) {
+                Log.w(TAG, "Recovered $staleTaskCount stuck IN_PROGRESS task operations from previous sync")
+            }
+
             // One-time iCloud URL migration: regional hosts (p180-caldav.icloud.com) become
             // caldav.icloud.com, so iCloud's server rotation doesn't strand stored URLs.
             val migrated = iCloudUrlMigration.migrateIfNeeded()
@@ -218,11 +238,17 @@ class CalDavSyncWorker @AssistedInject constructor(
             val thirtyDaysAgo = now - PendingOperation.OPERATION_LIFETIME_MS
 
             // A forced full sync resets every FAILED and ABANDONED operation, and its
-            // lifetime_reset_at, for a fresh 30-day window. Runs first.
+            // lifetime_reset_at, for a fresh 30-day window. Runs first. The task queue resets
+            // FAILED only — its ABANDONED ops are 412 server-wins resolutions the pull owns.
             if (forceFullSync) {
                 val failedResetCount = pendingOperationsDao.resetAllFailed(now)
                 if (failedResetCount > 0) {
                     Log.i(TAG, "Reset $failedResetCount failed operations for retry (force full sync)")
+                }
+
+                val failedTaskResetCount = pendingTaskOperationsDao.resetAllFailed(now)
+                if (failedTaskResetCount > 0) {
+                    Log.i(TAG, "Reset $failedTaskResetCount failed task operations for retry (force full sync)")
                 }
             }
 
@@ -247,6 +273,17 @@ class CalDavSyncWorker @AssistedInject constructor(
                     abandonedOps.size,
                     resolveExpiredCalendarScope(abandonedOps)
                 )
+            }
+
+            // Task operations expire by age instead of the events' abandon-and-notify: 30
+            // days after queueing they are deleted, and a task row the expired DELETE had
+            // soft-deleted goes with it — the task queue has no Force-Sync revival, so the
+            // tombstone would otherwise outlive its operation forever.
+            val expiredTaskOps = pendingTaskOperationsDao.deleteExpired(
+                cutoff = now - RetryDelays.OPERATION_LIFETIME_MS
+            )
+            if (expiredTaskOps > 0) {
+                Log.w(TAG, "Deleted $expiredTaskOps task operations exceeding 30-day lifetime")
             }
 
             // Retry FAILED operations older than 24 hours, except expired ones.

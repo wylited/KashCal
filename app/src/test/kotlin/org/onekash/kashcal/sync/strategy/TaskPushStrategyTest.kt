@@ -10,6 +10,7 @@ import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -448,6 +449,46 @@ class TaskPushStrategyTest {
         assertEquals(1, result.failed)
         coVerify { pendingTaskOperationsDao.markAbandoned(105L, any(), any()) }
         coVerify { tasksDao.markSynced(5L, null, any()) }
+    }
+
+    @Test
+    fun `move conflict restores the source calendar so the source pull heals the row`() = runTest {
+        val sourceUrl = "https://caldav.example.com/user/tasks/task-uid.ics"
+        ready(
+            operation(
+                operation = PendingTaskOperation.OPERATION_MOVE,
+                targetUrl = sourceUrl,
+                targetCalendarId = 9L,
+                sourceCalendarId = 1L
+            )
+        )
+        // Mid-move state: the row is parked on the target calendar at the source URL.
+        coEvery { tasksDao.getByIds(any()) } returns
+            listOf(task(calendarId = 9L, caldavUrl = sourceUrl, etag = "\"e1\""))
+        coEvery { calendarRepository.getCalendarById(9L) } returns targetCalendar
+        coEvery { calendarRepository.getCalendarById(1L) } returns calendar
+        coEvery { client.createEvent(targetCalendar.caldavUrl, any(), any()) } returns
+            CalDavResult.conflictError("Conflict")
+
+        // The op names its target, so the target calendar's run drains it.
+        val result = strategy.pushForCalendar(targetCalendar, client)
+
+        assertEquals(1, result.failed)
+        coVerify { pendingTaskOperationsDao.markAbandoned(105L, any(), any()) }
+        val updates = mutableListOf<Task>()
+        coVerify(atLeast = 1) { tasksDao.update(capture(updates)) }
+        // The row returns to the source calendar at the source URL, SYNCED with no etag, so
+        // the source pull's UID/URL match applies the server copy instead of double-ingesting;
+        // the SEQUENCE bump that never reached the server is undone too.
+        assertTrue(
+            updates.any {
+                it.calendarId == 1L && it.caldavUrl == sourceUrl &&
+                    it.syncStatus == SyncStatus.SYNCED && it.etag == null && it.sequence == 0
+            }
+        )
+        // The pre-push SEQUENCE bump writes calendar 9 first; the restore must be the last word.
+        assertEquals(1L, updates.last().calendarId)
+        coVerify(exactly = 0) { tasksDao.markSynced(any(), any(), any()) }
     }
 
     @Test

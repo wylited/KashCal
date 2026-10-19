@@ -49,6 +49,8 @@ import org.onekash.kashcal.data.db.entity.Event
 import org.onekash.kashcal.data.db.entity.Occurrence
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.ui.components.TaskFormState
+import org.onekash.kashcal.ui.components.taskPlacementDate
+import org.onekash.kashcal.ui.components.taskPlacementDayCode
 import org.onekash.kashcal.ui.components.toDueFields
 import org.onekash.kashcal.data.preferences.DefaultCalendar
 import org.onekash.kashcal.data.contacts.ContactEventUtils
@@ -139,6 +141,12 @@ data class EpochRange(val startMs: Long, val endMs: Long)
 data class WeekEventsUiState(
     val timedEvents: ImmutableList<DisplayEvent> = persistentListOf(),
     val allDayEvents: ImmutableList<DisplayEvent> = persistentListOf(),
+    /**
+     * Open tasks with a timed DUE, ordered by it; each renders in its day column at the due
+     * time. All-day and undated tasks stay out of the time grids — the agenda and the Tasks
+     * screen show them.
+     */
+    val timedTasks: ImmutableList<Task> = persistentListOf(),
     val isLoading: Boolean = false,
     val error: String? = null
 ) {
@@ -314,6 +322,14 @@ class HomeViewModel(
     val quickAddEnabled: StateFlow<Boolean> = dataStore.quickAddEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    /** Whether the Agenda lists a day's completed tasks after its open ones (Views setting). */
+    val agendaCompletedTasksVisible: StateFlow<Boolean> = dataStore.viewOptAgendaCompletedTasks
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /** Whether the Month grids badge days with due tasks (Views setting, default on). */
+    val monthTaskBadgeEnabled: StateFlow<Boolean> = dataStore.viewOptMonthTaskBadge
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     /**
      * Suggests prior event titles matching [prefix] for the form autocomplete.
      *
@@ -442,6 +458,15 @@ class HomeViewModel(
         .observeTasks(VisibilityDomain.AGENDA)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /**
+     * Every task of schedule-visible calendars, the time-grid task blocks' source: the grids
+     * follow the drawer's main visibility toggle, not the agenda eye, per
+     * [VisibilityDomain]'s split.
+     */
+    private val scheduleTasks: StateFlow<List<Task>> = taskReader
+        .observeTasks(VisibilityDomain.SCHEDULE)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val quickViewTaskId = MutableStateFlow<Long?>(null)
 
     /**
@@ -488,6 +513,8 @@ class HomeViewModel(
             try {
                 withContext(ioDispatcher) { taskRepository.toggleDone(task) }
                 widgetUpdateManager.updateAllWidgets("task_changed")
+                // The month badges count open tasks; completion changes them.
+                buildTaskBadges(_uiState.value.viewingYear, _uiState.value.viewingMonth)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -507,6 +534,7 @@ class HomeViewModel(
                 withContext(ioDispatcher) { taskRepository.delete(task) }
                 Log.d(TAG, "Task deleted: ${task.id}")
                 widgetUpdateManager.updateAllWidgets("task_changed")
+                buildTaskBadges(_uiState.value.viewingYear, _uiState.value.viewingMonth)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -553,6 +581,7 @@ class HomeViewModel(
                 if (calendarId != existing.calendarId) taskRepository.move(updated, calendarId) else updated
             }
             widgetUpdateManager.updateAllWidgets("task_changed")
+            buildTaskBadges(_uiState.value.viewingYear, _uiState.value.viewingMonth)
             Result.success(saved)
         } catch (e: CancellationException) {
             throw e
@@ -680,6 +709,15 @@ class HomeViewModel(
                 } else {
                     WeekEventsUiState.fromEvents(raw.events, showMultiDayTimedInAllDayStrip)
                 }
+            }
+            // Combined last, so a task write only re-slices the timed tasks in memory.
+            .combine(scheduleTasks) { state, tasks ->
+                state.copy(
+                    timedTasks = tasks
+                        .filter { it.isOpen && it.dueTs != null && !it.dueIsAllDay }
+                        .sortedBy { it.dueTs }
+                        .toPersistentList()
+                )
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), WeekEventsUiState.EMPTY)
 
@@ -814,6 +852,41 @@ class HomeViewModel(
                 state?.copy(showMultiDayTimedInAllDayStrip = show)
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /**
+     * The Planner's open tasks by day code, the same three-week window [plannerState] loads, so
+     * a page swiped into view already has its days. Empty while the Planner is idle. Re-emits
+     * while subscribed on the schedule-domain task rows, so a completion elsewhere updates the
+     * boxes live.
+     */
+    @Suppress("OPT_IN_USAGE")
+    val plannerTasks: StateFlow<ImmutableMap<Int, ImmutableList<Task>>> =
+        plannerWeekKey
+            .flatMapLatest { weekStartDayCode ->
+                if (weekStartDayCode == null) {
+                    flowOf(persistentMapOf())
+                } else {
+                    val zone = ZoneId.systemDefault()
+                    taskReader.observeTasks(VisibilityDomain.SCHEDULE)
+                        .map { tasks ->
+                            tasks.filter { it.isOpen }
+                                .groupBy { task ->
+                                    taskPlacementDayCode(task, zone)
+                                        // An undated task has no day box; it never renders here.
+                                        ?: 0
+                                }
+                                .filterKeys { it != 0 }
+                                .mapValues { (_, dayTasks) -> dayTasks.toPersistentList() }
+                                .toPersistentMap()
+                        }
+                        .catch { e ->
+                            if (e is CancellationException) throw e
+                            Log.e(TAG, "Error loading planner tasks", e)
+                            emit(persistentMapOf())
+                        }
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), persistentMapOf())
 
     /**
      * Returns the all-day flag of each Room series with a changed occurrence in [byDay], for the
@@ -1064,6 +1137,7 @@ class HomeViewModel(
             // Event dots for the current month +/- 6 months.
             val today = Calendar.getInstance()
             buildEventDots(today.get(Calendar.YEAR), today.get(Calendar.MONTH))
+            buildTaskBadges(today.get(Calendar.YEAR), today.get(Calendar.MONTH))
 
             // Land on today in the current view. Cold start lands without animation so the month
             // pager settles in one frame; the Today button keeps its animation.
@@ -1278,8 +1352,8 @@ class HomeViewModel(
 
     /**
      * Copies the display preferences into uiState as they change (emojis, time format, first day
-     * of week, week numbers, the bars' expanded states, tag placement, initials), plus the recent
-     * tags and tag colors.
+     * of week, week numbers, weekend hiding, the bars' expanded states, tag placement, initials),
+     * plus the recent tags and tag colors.
      */
     private fun observeDisplaySettings() {
         viewModelScope.launch {
@@ -1302,6 +1376,11 @@ class HomeViewModel(
         viewModelScope.launch {
             dataStore.showWeekNumbers.collect { show ->
                 _uiState.update { it.copy(showWeekNumbers = show) }
+            }
+        }
+        viewModelScope.launch {
+            dataStore.viewOptHideWeekends.collect { hide ->
+                _uiState.update { it.copy(hideWeekends = hide) }
             }
         }
         viewModelScope.launch {
@@ -1371,6 +1450,10 @@ class HomeViewModel(
                         }
                         // Rebuild around the viewing month.
                         buildEventDots(
+                            _uiState.value.viewingYear,
+                            _uiState.value.viewingMonth
+                        )
+                        buildTaskBadges(
                             _uiState.value.viewingYear,
                             _uiState.value.viewingMonth
                         )
@@ -1682,6 +1765,8 @@ class HomeViewModel(
             // Only the dots need a rebuild: they come from a one-shot query, and the other
             // views follow the visibility through their Flows.
             buildEventDots(_uiState.value.viewingYear, _uiState.value.viewingMonth)
+            // The badges read the schedule domain, so the same toggle re-cuts them.
+            buildTaskBadges(_uiState.value.viewingYear, _uiState.value.viewingMonth)
         }
     }
 
@@ -1872,6 +1957,57 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Rebuilds the open-task badges for the viewing month +/- 6 months, replacing the cached
+     * ones — the month-side twin of [buildEventDots], on the same window and one-shot rhythm, so
+     * the compact month's badge markers and the full-height grid's task rows read
+     * [HomeUiState.monthTaskBadges] without a reactive query per swipe. Schedule domain: the
+     * month grids follow the main visibility toggle, not the agenda eye.
+     */
+    private fun buildTaskBadges(year: Int, month: Int) {
+        viewModelScope.launch {
+            try {
+                val zone = ZoneId.systemDefault()
+                val centerEncoded = encodeMonth(year, month)
+                val startEncoded = centerEncoded - 6
+                val endEncoded = centerEncoded + 6
+
+                val (startYear, startMonth) = decodeMonth(startEncoded)
+                val (endYear, endMonth) = decodeMonth(endEncoded)
+                val firstDay = LocalDate.of(startYear, startMonth + 1, 1)
+                val lastDay = LocalDate.of(endYear, endMonth + 1, 1).withDayOfMonth(
+                    LocalDate.of(endYear, endMonth + 1, 1).lengthOfMonth()
+                )
+                val startTs = firstDay.atStartOfDay(zone).toInstant().toEpochMilli()
+                val endTs = lastDay.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+
+                val tasks = withContext(ioDispatcher) {
+                    taskReader.getOpenTasksBetween(startTs, endTs, VisibilityDomain.SCHEDULE)
+                }
+
+                val badges = mutableMapOf<String, MutableMap<Int, MutableList<Task>>>()
+                for (task in tasks) {
+                    val date = taskPlacementDate(task, zone) ?: continue
+                    val key = String.format(Locale.ROOT, "%04d-%02d", date.year, date.monthValue)
+                    val dayMap = badges.getOrPut(key) { mutableMapOf() }
+                    dayMap.getOrPut(date.dayOfMonth) { mutableListOf() }.add(task)
+                }
+
+                val immutableBadges = badges.mapValues { (_, dayMap) ->
+                    dayMap.mapValues { (_, dayTasks) -> dayTasks.toPersistentList() }.toPersistentMap()
+                }.toPersistentMap()
+
+                _uiState.update { it.copy(monthTaskBadges = immutableBadges) }
+
+                Log.d(TAG, "Built task badges for ${badges.size} months: $startYear-${startMonth + 1} to $endYear-${endMonth + 1}")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Error building task badges", e)
+            }
+        }
+    }
+
     // ==================== Year View Dots ====================
 
     /**
@@ -2048,10 +2184,13 @@ class HomeViewModel(
             )
         }
 
-        // MONTH_FULL skips the dots: its grid has the full events.
+        // MONTH_FULL skips the dots: its grid has the full events. The task badges still
+        // rebuild: the full-height grid's task rows and the compact month's badge markers both
+        // read the one-shot map, so a swipe into a month outside its window re-centers it.
         if (_uiState.value.viewMode != ViewMode.MONTH_FULL) {
             ensureDotsForMonth(year, month)
         }
+        buildTaskBadges(year, month)
 
         if (_uiState.value.viewMode == ViewMode.MONTH_FULL) {
             setMonthGridKey(MonthKey(year, month))
@@ -2571,6 +2710,7 @@ class HomeViewModel(
                 isSearchActive = true,
                 searchQuery = "",
                 searchResults = persistentListOf(),
+                searchTaskResults = persistentListOf(),
                 searchDateFilter = DateFilter.Upcoming,
                 showSearchDatePicker = false,
                 searchDateRangeStart = null
@@ -2585,6 +2725,7 @@ class HomeViewModel(
                 isSearchActive = false,
                 searchQuery = "",
                 searchResults = persistentListOf(),
+                searchTaskResults = persistentListOf(),
                 searchDateFilter = DateFilter.Upcoming,
                 showSearchDatePicker = false,
                 searchDateRangeStart = null
@@ -2607,7 +2748,7 @@ class HomeViewModel(
                 performSearch(query)
             }
         } else {
-            _uiState.update { it.copy(searchResults = persistentListOf()) }
+            _uiState.update { it.copy(searchResults = persistentListOf(), searchTaskResults = persistentListOf()) }
         }
     }
 
@@ -2777,7 +2918,17 @@ class HomeViewModel(
                     }
                 }
 
-                _uiState.update { it.copy(searchResults = filteredResults.toPersistentList()) }
+                _uiState.update {
+                    it.copy(
+                        searchResults = filteredResults.toPersistentList(),
+                        // Open matches first, then completed ones; the reader's `due ?? dtstart`
+                        // order stands within each. The date filter doesn't apply: a task's
+                        // placement is its due day, not an occurrence range to hit.
+                        searchTaskResults = withContext(ioDispatcher) { taskReader.searchTasks(query) }
+                            .sortedBy { it.isDone }
+                            .toPersistentList()
+                    )
+                }
 
                 Log.d(TAG, "Search '$query' returned ${filteredResults.size} results (filter=${dateFilter::class.simpleName})")
             } catch (e: Exception) {
@@ -3170,6 +3321,7 @@ class HomeViewModel(
      */
     private fun reloadCurrentView() {
         buildEventDots(_uiState.value.viewingYear, _uiState.value.viewingMonth)
+        buildTaskBadges(_uiState.value.viewingYear, _uiState.value.viewingMonth)
         // The month grid (monthEvents), the agenda and the time grid follow the data themselves.
         if (_uiState.value.viewMode != ViewMode.MONTH_FULL && _uiState.value.cacheRangeCenter != 0L) {
             loadEventsForDayPagerRange(_uiState.value.cacheRangeCenter)

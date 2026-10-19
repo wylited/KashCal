@@ -112,6 +112,7 @@ import org.onekash.kashcal.ui.components.WeekStripLetter
 import org.onekash.kashcal.ui.components.pickers.dayCellStyle
 import org.onekash.kashcal.R
 import org.onekash.kashcal.data.db.entity.Occurrence
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.EmojiMatcher
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.ui.components.declinedCardAlpha
@@ -138,6 +139,17 @@ internal const val TEST_TAG_ALL_DAY_CHEVRON = "allDayChevron"
 internal const val TEST_TAG_FIRST_TIME_LABEL = "firstTimeLabel"
 
 /**
+ * One week page's dates: the seven days from [weekStart], with Saturday and Sunday dropped when
+ * [hideWeekends] is on. The single source of the week grid's columns — headers, all-day strip,
+ * day columns, drag targeting, pinch anchor and the now line all size or index themselves from
+ * this list, so it alone decides the shown days.
+ */
+private fun weekPageDates(weekStart: LocalDate, hideWeekends: Boolean): List<LocalDate> {
+    val days = List(7) { offset -> weekStart.plusDays(offset.toLong()) }
+    return if (hideWeekends) days.filterNot(WeekViewUtils::isWeekend) else days
+}
+
+/**
  * Shows the day, 3-day and week time grids over a pseudo-infinite pager.
  *
  * With [visibleDays] 1 or 3, each page is one day and [WeekViewUtils.CENTER_DAY_PAGE] is today;
@@ -147,12 +159,15 @@ internal const val TEST_TAG_FIRST_TIME_LABEL = "firstTimeLabel"
  *
  * Top to bottom: day headers (not in Day view), the all-day strip, then the 24-hour grid. The
  * headers and the strip sit above the pager and follow its current page. A "+N" badge opens
- * [OverlapListSheet].
+ * [OverlapListSheet]. Open tasks with a timed DUE render in their day column at the due time as
+ * slim chips ([timedTasks]); all-day and undated tasks stay out of the grids.
  */
 @Composable
 fun WeekViewContent(
     timedEvents: ImmutableList<DisplayEvent>,
     allDayEvents: ImmutableList<DisplayEvent>,
+    timedTasks: List<Task> = emptyList(),
+    taskColorById: Map<Long, Int> = emptyMap(),
     isLoading: Boolean,
     error: String?,
     scrollPosition: Int,
@@ -164,6 +179,11 @@ fun WeekViewContent(
     visibleDays: Int = 3,
     firstDayOfWeek: Int = java.util.Calendar.SUNDAY,
     /**
+     * Drops Saturday and Sunday from the week view's columns (the Week option in the Views
+     * settings). Week pages then lay five columns out; no effect on the 1- and 3-day grids.
+     */
+    hideWeekends: Boolean = false,
+    /**
      * Localized prefix for the week-number label ("W") in the header corner, left of the day
      * headers. Shown only in the 7-day week view; blank hides it.
      */
@@ -172,6 +192,7 @@ fun WeekViewContent(
     onAllDayRowsToggle: () -> Unit = {},
     onDatePickerRequest: () -> Unit,
     onEventClick: (DisplayEvent) -> Unit,
+    onTaskClick: (Task) -> Unit = {},
     onEmptyTap: (LocalDate, Int, Int) -> Unit = { _, _, _ -> },
     onScrollPositionChange: (Int) -> Unit,
     onScrollMinutesChange: (Int) -> Unit = {},
@@ -293,6 +314,17 @@ fun WeekViewContent(
         groupEventsByDate(timedEvents.toList())
     }
 
+    // Timed-due tasks grouped by their due day's local date, the day column they render in.
+    val timedTasksByDate = remember(timedTasks) {
+        val zone = ZoneId.systemDefault()
+        buildMap {
+            for (task in timedTasks) {
+                val dueTs = task.dueTs ?: continue
+                getOrPut(Instant.ofEpochMilli(dueTs).atZone(zone).toLocalDate()) { mutableListOf() }.add(task)
+            }
+        }
+    }
+
     val allDayEventsList = remember(allDayEvents) { allDayEvents.toList() }
 
     // Every timed event goes to the grid, which covers the full 24 hours.
@@ -322,12 +354,15 @@ fun WeekViewContent(
             UnifiedTimeGrid(
                 pagerState = pagerState,
                 normalEventsByDate = normalEventsByDate,
+                timedTasksByDate = timedTasksByDate,
+                taskColorById = taskColorById,
                 allDayEvents = allDayEventsList,
                 startHour = startHour,
                 endHour = endHour,
                 totalHours = totalHours,
                 visibleDays = visibleDays,
                 firstDayOfWeek = firstDayOfWeek,
+                hideWeekends = hideWeekends,
                 weekLabelPrefix = weekLabelPrefix,
                 allDayRowsExpanded = allDayRowsExpanded,
                 onAllDayRowsToggle = onAllDayRowsToggle,
@@ -338,6 +373,7 @@ fun WeekViewContent(
                 timePattern = timePattern,
                 maxVisibleOverlap = maxVisibleOverlap,
                 onEventClick = onEventClick,
+                onTaskClick = onTaskClick,
                 onOverflowClick = { events -> overflowEvents = events },
                 onEmptyTap = onEmptyTap,
                 onScrollPositionChange = onScrollPositionChange,
@@ -378,12 +414,15 @@ fun WeekViewContent(
 private fun UnifiedTimeGrid(
     pagerState: PagerState,
     normalEventsByDate: Map<LocalDate, List<DisplayEvent>>,
+    timedTasksByDate: Map<LocalDate, List<Task>>,
+    taskColorById: Map<Long, Int>,
     allDayEvents: List<DisplayEvent>,
     startHour: Int = WeekViewUtils.START_HOUR,
     endHour: Int = WeekViewUtils.END_HOUR,
     totalHours: Int = WeekViewUtils.TOTAL_HOURS,
     visibleDays: Int = 3,
     firstDayOfWeek: Int = java.util.Calendar.SUNDAY,
+    hideWeekends: Boolean = false,
     weekLabelPrefix: String = "",
     allDayRowsExpanded: Boolean = false,
     onAllDayRowsToggle: () -> Unit = {},
@@ -394,6 +433,7 @@ private fun UnifiedTimeGrid(
     timePattern: String = "h:mma",
     maxVisibleOverlap: Int = WeekViewUtils.MAX_VISIBLE_OVERLAP,
     onEventClick: (DisplayEvent) -> Unit,
+    onTaskClick: (Task) -> Unit = {},
     onOverflowClick: (List<DisplayEvent>) -> Unit,
     onEmptyTap: (LocalDate, Int, Int) -> Unit = { _, _, _ -> },
     onScrollPositionChange: (Int) -> Unit = {},
@@ -516,11 +556,13 @@ private fun UnifiedTimeGrid(
 
     // The current page's dates, shared by the headers, the week label, the all-day strip and
     // drag targeting.
-    val visibleDates by remember(visibleDays, firstDayOfWeek) {
+    val visibleDates by remember(visibleDays, firstDayOfWeek, hideWeekends) {
         derivedStateOf {
             if (visibleDays == 7) {
-                val weekStart = WeekViewUtils.weekPageToStartDate(pagerState.currentPage, firstDayOfWeek)
-                List(7) { offset -> weekStart.plusDays(offset.toLong()) }
+                weekPageDates(
+                    WeekViewUtils.weekPageToStartDate(pagerState.currentPage, firstDayOfWeek),
+                    hideWeekends,
+                )
             } else {
                 val page = pagerState.currentPage
                 List(visibleDays) { offset -> WeekViewUtils.pageToDate(page + offset) }
@@ -620,7 +662,9 @@ private fun UnifiedTimeGrid(
                 }
 
                 BoxWithConstraints(modifier = Modifier.weight(1f)) {
-                    val columnWidth = this.maxWidth / visibleDays
+                    // Week pages show one column per date (five with weekends hidden), day and
+                    // 3-day pages exactly [visibleDays] — the list size covers both.
+                    val columnWidth = this.maxWidth / visibleDates.size
                     val localViewportHeight = with(density) { this@BoxWithConstraints.maxHeight.toPx() }
                     viewportHeightPx = localViewportHeight
 
@@ -774,7 +818,8 @@ private fun UnifiedTimeGrid(
                             }
 
                             if (visibleDays == 7) {
-                                // Week mode: one page is a week, a Row of 7 DayColumns.
+                                // Week mode: one page is a week, a Row of DayColumns — five
+                                // when weekends are hidden, else seven.
                                 HorizontalPager(
                                     state = pagerState,
                                     modifier = Modifier.fillMaxSize(),
@@ -785,13 +830,15 @@ private fun UnifiedTimeGrid(
                                     val weekStart = WeekViewUtils.weekPageToStartDate(page, firstDayOfWeek)
 
                                     Row(modifier = Modifier.fillMaxSize()) {
-                                        for (dayOffset in 0 until 7) {
-                                            val date = weekStart.plusDays(dayOffset.toLong())
+                                        weekPageDates(weekStart, hideWeekends).forEachIndexed { dayOffset, date ->
                                             val dayEvents = normalEventsByDate[date].orEmpty()
 
                                             DayColumn(
                                                 date = date,
                                                 events = dayEvents,
+                                                timedTasks = timedTasksByDate[date].orEmpty(),
+                                                taskColorById = taskColorById,
+                                                onTaskClick = onTaskClick,
                                                 hourHeight = hourHeight,
                                                 now = now,
                                                 showEventEmojis = showEventEmojis,
@@ -855,7 +902,7 @@ private fun UnifiedTimeGrid(
                                 CurrentTimeIndicator(
                                     now = now,
                                     hourHeight = hourHeight,
-                                    visibleDays = 7,
+                                    visibleDays = visibleDates.size,
                                     startHour = startHour,
                                     todayOffset = { nowDate -> visibleDates.indexOf(nowDate) },
                                     columnWidth = columnWidth
@@ -876,6 +923,9 @@ private fun UnifiedTimeGrid(
                                     DayColumn(
                                         date = date,
                                         events = dayEvents,
+                                        timedTasks = timedTasksByDate[date].orEmpty(),
+                                        taskColorById = taskColorById,
+                                        onTaskClick = onTaskClick,
                                         hourHeight = hourHeight,
                                         now = now,
                                         showEventEmojis = showEventEmojis,

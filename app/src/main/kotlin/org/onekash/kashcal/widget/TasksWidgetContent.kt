@@ -104,7 +104,7 @@ private fun TasksWidgetHeader(isRefreshing: Boolean) {
                 .clickable(
                     actionStartActivity<MainActivity>(
                         parameters = actionParametersOf(
-                            ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_GO_TO_TODAY
+                            ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_OPEN_TASKS
                         )
                     )
                 ),
@@ -129,11 +129,22 @@ private fun TasksWidgetHeader(isRefreshing: Boolean) {
             )
         }
         WidgetRefreshButton(kind = WidgetKind.TASKS, isRefreshing = isRefreshing)
-        WidgetAddButton()
+        WidgetAddButton(action = ACTION_OPEN_TASKS)
     }
 }
 
-/** Shows one open task; tapping opens the app. */
+/**
+ * Returns the extras a task row tap sends to open that task's Quick View: the same
+ * [ACTION_SHOW_TASK] payload the Tasks and Upcoming widgets send. A separate function, like
+ * MonthWidgetContent's eventActionParameters, so tests can pin the click wiring.
+ */
+internal fun taskActionParameters(taskId: Long): ActionParameters =
+    actionParametersOf(
+        ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_SHOW_TASK,
+        ActionParameters.Key<Long>(EXTRA_TASK_ID) to taskId
+    )
+
+/** Shows one open task; tapping opens its Quick View. */
 @Composable
 private fun TaskRow(
     task: WidgetDataRepository.WidgetTask,
@@ -149,9 +160,7 @@ private fun TaskRow(
             )
             .clickable(
                 actionStartActivity<MainActivity>(
-                    parameters = actionParametersOf(
-                        ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_GO_TO_TODAY
-                    )
+                    parameters = taskActionParameters(task.taskId)
                 )
             ),
         verticalAlignment = Alignment.CenterVertically
@@ -286,7 +295,12 @@ internal fun formatWidgetTaskTime(
     return date.format(formatter)
 }
 
-/** Shows the no-open-tasks state; tapping opens the app. */
+/**
+ * Shows the no-open-tasks state. There is no task to open here, so it keeps the plain
+ * [ACTION_GO_TO_TODAY] deep link every other widget's empty state uses instead of
+ * [ACTION_OPEN_TASKS]: both land in MainActivity, and "today" is the least surprising
+ * target for a bare tap on an empty widget.
+ */
 @Composable
 private fun TasksEmptyState() {
     Column(

@@ -191,6 +191,9 @@ class MainActivity : FragmentActivity() {
                 val defaultReminderAllDay by homeViewModel.defaultReminderAllDay.collectAsStateWithLifecycle()
                 val defaultEventDuration by homeViewModel.defaultEventDuration.collectAsStateWithLifecycle()
                 val quickAddEnabled by homeViewModel.quickAddEnabled.collectAsStateWithLifecycle()
+                val agendaCompletedTasksVisible by homeViewModel.agendaCompletedTasksVisible.collectAsStateWithLifecycle()
+                val monthTaskBadgeEnabled by homeViewModel.monthTaskBadgeEnabled.collectAsStateWithLifecycle()
+                val plannerTasks by homeViewModel.plannerTasks.collectAsStateWithLifecycle()
 
                 val coroutineScope = rememberCoroutineScope()
 
@@ -664,6 +667,9 @@ class MainActivity : FragmentActivity() {
                     drawerState = drawerState,
                     onDrawerToggleCalendar = { calendarId -> homeViewModel.toggleCalendarVisibility(calendarId) },
                     onDrawerToggleDeviceCalendarVisibility = { calendarId -> homeViewModel.toggleDeviceCalendarVisibility(calendarId) },
+                    onDrawerToggleCalendarAgendaVisibility = { calendarId ->
+                        homeViewModel.toggleCalendarAgendaVisibility(calendarId)
+                    },
                     // Share availability
                     onShareAvailabilityClick = { homeViewModel.openShareAvailabilitySheet() },
                     // Info callbacks
@@ -770,6 +776,10 @@ class MainActivity : FragmentActivity() {
                     onToggleTaskDone = { task -> homeViewModel.toggleTaskDone(task) },
                     onTaskClick = { task -> homeViewModel.showTaskQuickView(task.id) },
                     onNewTask = { homeViewModel.showTaskForm() },
+                    // Task integration: the Views setting gates and the planner's task rows
+                    showAgendaCompletedTasks = agendaCompletedTasksVisible,
+                    showMonthTaskBadges = monthTaskBadgeEnabled,
+                    plannerTasks = plannerTasks,
                     pendingInvitesCount = pendingInvitesCount,
                     pendingInvitations = pendingInvitations,
                     onOpenInvitationInbox = { homeViewModel.openInvitationInbox() },
@@ -1080,6 +1090,7 @@ class MainActivity : FragmentActivity() {
                         formTaskLoaded = true
                     }
                     if (formTaskLoaded) {
+                        val taskSaveFailedMessage = stringResource(R.string.task_save_failed)
                         TaskFormSheet(
                             task = formTask,
                             calendars = uiState.calendars,
@@ -1088,6 +1099,12 @@ class MainActivity : FragmentActivity() {
                             firstDayOfWeek = uiState.firstDayOfWeek,
                             onDismiss = { homeViewModel.dismissTaskForm() },
                             onSave = { formState -> homeViewModel.saveTask(formState) },
+                            onSaveError = { failure ->
+                                homeViewModel.showSnackbar(
+                                    failure.message?.takeIf { it.isNotBlank() }
+                                        ?: taskSaveFailedMessage
+                                )
+                            },
                             onDelete = { task ->
                                 homeViewModel.dismissTaskForm()
                                 homeViewModel.deleteTask(task)
@@ -2181,6 +2198,19 @@ class MainActivity : FragmentActivity() {
                             )
                         }
                     }
+                    return
+                }
+                org.onekash.kashcal.widget.ACTION_SHOW_TASK -> {
+                    val taskId = intent.getLongExtra(org.onekash.kashcal.widget.EXTRA_TASK_ID, -1)
+                    if (taskId != -1L) {
+                        Log.d(TAG, "Widget: showing task $taskId")
+                        homeViewModel.showTaskQuickView(taskId)
+                    }
+                    return
+                }
+                org.onekash.kashcal.widget.ACTION_OPEN_TASKS -> {
+                    Log.d(TAG, "Widget: opening the Tasks view")
+                    homeViewModel.setViewMode(ViewMode.TASKS)
                     return
                 }
                 org.onekash.kashcal.widget.ACTION_CREATE_EVENT -> {

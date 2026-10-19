@@ -45,10 +45,12 @@ import androidx.compose.ui.unit.dp
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableMap
 import org.onekash.kashcal.R
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.domain.monthfull.clampMonthFullZoom
 import org.onekash.kashcal.ui.components.declinedCardAlpha
 import org.onekash.kashcal.ui.components.AgendaWeekBarLogic
+import org.onekash.kashcal.ui.components.TaskCheckboxGlyph
 import org.onekash.kashcal.ui.components.declinedTitleDecoration
 import org.onekash.kashcal.ui.components.eventStateRes
 import org.onekash.kashcal.ui.components.formatDisplayEventTitle
@@ -90,6 +92,9 @@ internal fun MonthFullPage(
     month: Int,
     selectedDate: Long,
     monthEventsMap: ImmutableMap<Int, ImmutableList<DisplayEvent>>,
+    tasksByDayCode: Map<Int, List<Task>> = emptyMap(),
+    taskColorById: Map<Long, Int> = emptyMap(),
+    showTaskRows: Boolean = false,
     onDateSelected: (Long) -> Unit,
     firstDayOfWeek: Int,
     showWeekNumbers: Boolean,
@@ -114,6 +119,9 @@ internal fun MonthFullPage(
             month = month,
             selectedDate = selectedDate,
             monthEventsMap = monthEventsMap,
+            tasksByDayCode = tasksByDayCode,
+            taskColorById = taskColorById,
+            showTaskRows = showTaskRows,
             onDateSelected = onDateSelected,
             firstDayOfWeekPref = firstDayOfWeek,
             showWeekNumbers = showWeekNumbers,
@@ -150,6 +158,9 @@ internal fun FullHeightMonthGrid(
     month: Int,
     selectedDate: Long,
     monthEventsMap: ImmutableMap<Int, ImmutableList<DisplayEvent>>,
+    tasksByDayCode: Map<Int, List<Task>> = emptyMap(),
+    taskColorById: Map<Long, Int> = emptyMap(),
+    showTaskRows: Boolean = false,
     onDateSelected: (Long) -> Unit,
     firstDayOfWeekPref: Int,
     showWeekNumbers: Boolean,
@@ -201,6 +212,9 @@ internal fun FullHeightMonthGrid(
                     year = year,
                     month = month,
                     monthEventsMap = monthEventsMap,
+                    tasksByDayCode = tasksByDayCode,
+                    taskColorById = taskColorById,
+                    showTaskRows = showTaskRows,
                     nowMs = nowMs,
                     todayDayCode = todayDayCode,
                     isSelected = { cell ->
@@ -228,6 +242,9 @@ private fun WeekRow(
     year: Int,
     month: Int,
     monthEventsMap: ImmutableMap<Int, ImmutableList<DisplayEvent>>,
+    tasksByDayCode: Map<Int, List<Task>>,
+    taskColorById: Map<Long, Int>,
+    showTaskRows: Boolean,
     nowMs: Long,
     todayDayCode: Int,
     isSelected: (MonthGrid.DayCell) -> Boolean,
@@ -249,12 +266,17 @@ private fun WeekRow(
             val slotPx = with(density) { (typography.labelSmall.lineHeight.toDp() + SLOT_PADDING * 2).roundToPx() }
             val gapPx = with(density) { SLOT_GAP.roundToPx() }
             val rows = rowPx?.let { monthFullFittedRows(it, stripPx, slotPx, gapPx) } ?: UNBOUNDED_ROWS
-            val render = remember(weekDayCodes, monthEventsMap, rows) {
-                computeMonthFullWeekRender(weekDayCodes, monthEventsMap, rows)
+            val render = remember(weekDayCodes, monthEventsMap, tasksByDayCode, showTaskRows, rows) {
+                computeMonthFullWeekRender(
+                    weekDayCodes, monthEventsMap, rows,
+                    tasksByDayCode = if (showTaskRows) tasksByDayCode else emptyMap(),
+                )
             }
             val isInMonth = { col: Int -> row[col].position == MonthGrid.DayPosition.MonthDate }
             val isToday = { col: Int -> isInMonth(col) && weekDayCodes[col] == todayDayCode }
-            val descriptions = rememberDayDescriptions(render, row, weekDayCodes, monthEventsMap, todayDayCode, showEventEmojis)
+            val descriptions = rememberDayDescriptions(
+                render, row, weekDayCodes, monthEventsMap, tasksByDayCode, showTaskRows, todayDayCode, showEventEmojis
+            )
 
             // The tap targets, drawn first, under rows that have no pointer input: every tap
             // reaches the cell under the finger.
@@ -302,6 +324,7 @@ private fun WeekRow(
                                 hiddenCounts = if (slotIndex == render.slots.lastIndex) render.hiddenCounts else null,
                                 height = slotHeight,
                                 showEventEmojis = showEventEmojis,
+                                taskColorById = taskColorById,
                                 isPast = { e -> DateTimeUtils.isEventPast(e.endTs, e.endDay, e.isAllDay, nowMs, todayDayCode) },
                             )
                         }
@@ -319,6 +342,7 @@ private fun SlotRow(
     hiddenCounts: List<Int>?,
     height: Dp,
     showEventEmojis: Boolean,
+    taskColorById: Map<Long, Int>,
     isPast: (DisplayEvent) -> Boolean,
 ) {
     Row(modifier = Modifier.fillMaxWidth().height(height)) {
@@ -346,6 +370,21 @@ private fun SlotRow(
                             showEventEmojis = showEventEmojis,
                             isInOutDate = row[col].position != MonthGrid.DayPosition.MonthDate,
                             isPast = isPast(content.displayEvent),
+                        )
+                    }
+                    val hidden = hiddenCounts?.get(col) ?: 0
+                    if (hidden > 0) {
+                        CellSlot(hidden = hidden, modifier = Modifier.weight(1f), content = snippet)
+                    } else {
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight(), content = snippet)
+                    }
+                    col++
+                }
+                is SlotContent.CellTask -> {
+                    val snippet: @Composable BoxScope.() -> Unit = {
+                        TaskSnippetSlot(
+                            task = content.task,
+                            color = Color(taskColorById[content.task.calendarId] ?: 0xFF6200EE.toInt()),
                         )
                     }
                     val hidden = hiddenCounts?.get(col) ?: 0
@@ -507,12 +546,14 @@ private fun rememberDayDescriptions(
     row: List<MonthGrid.DayCell>,
     weekDayCodes: List<Int>,
     monthEventsMap: ImmutableMap<Int, ImmutableList<DisplayEvent>>,
+    tasksByDayCode: Map<Int, List<Task>>,
+    showTaskRows: Boolean,
     todayDayCode: Int,
     showEventEmojis: Boolean,
 ): List<String> {
     val resources = LocalResources.current
     val todayLabel = stringResource(R.string.label_today)
-    return remember(render, row, monthEventsMap, todayDayCode, showEventEmojis, resources, todayLabel) {
+    return remember(render, row, monthEventsMap, tasksByDayCode, showTaskRows, todayDayCode, showEventEmojis, resources, todayLabel) {
         weekDayCodes.mapIndexed { col, dayCode ->
             val prefix = AgendaWeekBarLogic.cellContentDescription(
                 date = DayPagerUtils.dayCodeToLocalDate(dayCode),
@@ -527,11 +568,19 @@ private fun rememberDayDescriptions(
                 val state = eventStateRes(isPast = false, isDeclined = event.isDeclinedByMe, isCancelled = event.isCancelled)
                 if (state != null) "$title, ${resources.getString(state)}" else title
             }
+            // The task rows speak after the events, in placement order.
+            val taskTitles = if (showTaskRows) {
+                render.slots.mapNotNull { it[col] }
+                    .filterIsInstance<SlotContent.CellTask>()
+                    .map { it.task.summary }
+            } else {
+                emptyList()
+            }
             val hidden = render.hiddenCounts[col]
             monthFullDayDescription(
                 datePrefix = prefix,
                 countLabel = if (count > 0) resources.getQuantityString(R.plurals.event_count, count, count) else null,
-                titles = titles,
+                titles = titles + taskTitles,
                 moreLabel = if (hidden > 0) resources.getString(R.string.status_more_events, hidden) else null,
             )
         }
@@ -590,6 +639,40 @@ private fun DayHeaderCell(
             softWrap = false,
             modifier = Modifier
                 .alpha(monthDateNumberAlpha(isPastDay = isPastDay, isSelected = isSelected))
+                .semantics { hideFromAccessibility() },
+        )
+    }
+}
+
+@Composable
+private fun TaskSnippetSlot(
+    task: Task,
+    color: Color,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 1.dp, vertical = SLOT_PADDING)
+            .clip(RoundedCornerShape(SPAN_CORNER))
+            .background(color.copy(alpha = 0.12f)),
+    ) {
+        TaskCheckboxGlyph(
+            isDone = false,
+            color = color,
+            contentDescription = null,
+            onToggle = null,
+            size = 9.dp,
+            modifier = Modifier.padding(start = 3.dp),
+        )
+        Text(
+            text = task.summary,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier
+                .padding(start = 2.dp, end = 3.dp)
                 .semantics { hideFromAccessibility() },
         )
     }

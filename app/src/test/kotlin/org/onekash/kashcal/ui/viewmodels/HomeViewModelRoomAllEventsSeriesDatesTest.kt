@@ -146,6 +146,10 @@ class HomeViewModelRoomAllEventsSeriesDatesTest {
 
     @After
     fun tearDown() {
+        // Drain any coroutine that outlived its runTest and is still queued on Main
+        // (the shared StandardTestDispatcher) before resetting, so resetMain never
+        // races a late collector.
+        TestScope(dispatcher).advanceUntilIdle()
         db.close()
         Dispatchers.resetMain()
         TimeZone.setDefault(savedZone)

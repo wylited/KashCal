@@ -60,6 +60,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import org.onekash.kashcal.R
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.domain.model.isStripItem
 import org.onekash.kashcal.domain.planner.MovedCue
@@ -72,6 +73,7 @@ import org.onekash.kashcal.domain.planner.movedCue
 import org.onekash.kashcal.ui.components.declinedCardAlpha
 import org.onekash.kashcal.ui.components.declinedTitleDecoration
 import org.onekash.kashcal.ui.components.eventStateDescription
+import org.onekash.kashcal.ui.components.TaskCheckboxGlyph
 import org.onekash.kashcal.ui.components.formatDisplayEventTimeDisplay
 import org.onekash.kashcal.ui.components.formatDisplayEventTitle
 import org.onekash.kashcal.ui.components.weekview.WeekViewUtils
@@ -90,7 +92,9 @@ import java.util.Locale
 
 /**
  * Draws the Planner: one week as seven day boxes plus a "Different this week" box, paged
- * sideways by week. Times and days are in the system zone, as in the other views.
+ * sideways by week. With [hideWeekends] the Saturday and Sunday boxes don't render and the
+ * summary box follows the five weekday boxes. Times and days are in the system zone, as in the
+ * other views.
  *
  * Pages count weeks from [anchorDayCode] ([plannerShownWeekStart]), the same way the ViewModel
  * keys its query, and each page reads its days from [plannerState], which also holds the
@@ -101,10 +105,16 @@ import java.util.Locale
  * finger still pages, and vertical drags reach pull-to-refresh.
  *
  * @param anchorDayCode first day of the anchor week; null falls back to the week holding today.
+ * @param tasksByDayCode open tasks by the day code of their placement day (`due ?? dtstart`);
+ *   each day box lists its tasks after its events, capped like the events.
+ * @param calendarColorById calendar color by id, tinting the task rows.
  * @param pagerPosition the page to start on.
  * @param pendingNavigateToPage a page to scroll to (Today, the date picker), then
  *   [onNavigationConsumed] is called.
  * @param isCompactHeight the home screen's short-window check, which picks the 4 x 2 grid.
+ * @param firstDayOfWeek the week's first day; pages start on it.
+ * @param hideWeekends drops the Saturday and Sunday day boxes (the Planner option in the Views
+ *   settings); paging, summaries and moved cues are unaffected — they key on day codes.
  * @param onEmptyDayTap empty space in a day box with nothing hidden was tapped, with that day at
  *   the current time of day ([plannerDayMs]).
  * @param onDayClick an event row, an all-day ribbon, the space around the rows of a box showing
@@ -114,10 +124,13 @@ import java.util.Locale
 @Composable
 internal fun PlannerView(
     plannerState: PlannerWeekState?,
+    tasksByDayCode: Map<Int, List<Task>>,
+    calendarColorById: Map<Long, Int>,
     anchorDayCode: Int?,
     pagerPosition: Int,
     pendingNavigateToPage: Int?,
     firstDayOfWeek: Int,
+    hideWeekends: Boolean = false,
     todayDayCode: Int,
     nowMs: Long,
     timePattern: String,
@@ -171,7 +184,10 @@ internal fun PlannerView(
     ) { page ->
         PlannerWeekPage(
             plannerState = plannerState,
+            tasksByDayCode = tasksByDayCode,
+            calendarColorById = calendarColorById,
             weekStart = plannerShownWeekStart(anchorDayCode, page, firstDayOfWeek, today),
+            hideWeekends = hideWeekends,
             todayDayCode = todayDayCode,
             nowMs = nowMs,
             timePattern = timePattern,
@@ -212,7 +228,10 @@ private class PlannerPageModel(
 @Composable
 private fun PlannerWeekPage(
     plannerState: PlannerWeekState?,
+    tasksByDayCode: Map<Int, List<Task>>,
+    calendarColorById: Map<Long, Int>,
     weekStart: LocalDate,
+    hideWeekends: Boolean,
     todayDayCode: Int,
     nowMs: Long,
     timePattern: String,
@@ -224,7 +243,10 @@ private fun PlannerWeekPage(
     onDayClick: (Long) -> Unit,
     onDayHeaderClick: (LocalDate) -> Unit,
 ) {
-    val days = remember(weekStart) { (0..6).map { weekStart.plusDays(it.toLong()) } }
+    val days = remember(weekStart, hideWeekends) {
+        val all = (0..6).map { weekStart.plusDays(it.toLong()) }
+        if (hideWeekends) all.filterNot(WeekViewUtils::isWeekend) else all
+    }
     val model = remember(plannerState, days, todayDayCode) {
         val dayCodes = days.map(DayPagerUtils::localDateToDayCode)
         if (plannerState == null || !dayCodes.all { plannerState.covers(it) }) {
@@ -263,6 +285,8 @@ private fun PlannerWeekPage(
                             date = days[index],
                             dayCode = dayCode,
                             events = plannerState?.eventsByDayCode?.get(dayCode).orEmpty(),
+                            tasks = tasksByDayCode[dayCode].orEmpty(),
+                            taskColorById = calendarColorById,
                             loaded = model.loaded,
                             showStrip = showStrip,
                             cues = model.cues,
@@ -277,7 +301,9 @@ private fun PlannerWeekPage(
                             onDayHeaderClick = onDayHeaderClick,
                             modifier = cellModifier,
                         )
-                    } else {
+                    } else if (index == days.size) {
+                        // The summary box follows the last day box; a weekend-hidden week (five
+                        // day boxes in the fixed eight-cell grid) leaves the last cells blank.
                         PlannerSummaryBox(
                             items = model.summary,
                             loaded = model.loaded,
@@ -288,6 +314,8 @@ private fun PlannerWeekPage(
                             onDayClick = onDayClick,
                             modifier = cellModifier,
                         )
+                    } else {
+                        Spacer(modifier = cellModifier)
                     }
                 }
             }
@@ -300,6 +328,8 @@ private fun PlannerDayBox(
     date: LocalDate,
     dayCode: Int,
     events: List<DisplayEvent>,
+    tasks: List<Task>,
+    taskColorById: Map<Long, Int>,
     loaded: Boolean,
     showStrip: Boolean,
     cues: Map<String, MovedCue>,
@@ -366,6 +396,8 @@ private fun PlannerDayBox(
                     dayCode = dayCode,
                     strip = strip,
                     rows = rows,
+                    tasks = tasks,
+                    taskColorById = taskColorById,
                     loaded = loaded,
                     isPastDay = isPastDay,
                     cues = cues,
@@ -387,6 +419,8 @@ private fun PlannerDayBody(
     dayCode: Int,
     strip: List<DisplayEvent>,
     rows: List<DisplayEvent>,
+    tasks: List<Task>,
+    taskColorById: Map<Long, Int>,
     loaded: Boolean,
     isPastDay: Boolean,
     cues: Map<String, MovedCue>,
@@ -416,10 +450,18 @@ private fun PlannerDayBody(
             onClick = { onDayClick(dayMs()) },
         )
     }
+    val taskRow: @Composable (Task, Boolean) -> Unit = { task, oneLine ->
+        PlannerTaskRow(
+            task = task,
+            color = Color(taskColorById[task.calendarId] ?: 0xFF6200EE.toInt()),
+            oneLine = oneLine,
+            onClick = { onDayClick(dayMs()) },
+        )
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         when {
             !loaded -> Unit
-            strip.isEmpty() && rows.isEmpty() -> {
+            strip.isEmpty() && rows.isEmpty() && tasks.isEmpty() -> {
                 Spacer(
                     modifier = Modifier
                         .fillMaxSize()
@@ -428,7 +470,7 @@ private fun PlannerDayBody(
                 if (!isPastDay) PlannerFreeDay(Modifier.fillMaxSize().padding(4.dp))
             }
             else -> PlannerFitColumn(
-                itemCount = strip.size + rows.size,
+                itemCount = strip.size + rows.size + tasks.size,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 5.dp, vertical = 3.dp),
                 background = { hidden ->
@@ -476,10 +518,57 @@ private fun PlannerDayBody(
                 if (ribbon != null) {
                     PlannerRibbon(ribbon, dayCode, showEventEmojis, nowMs, todayDayCode) { onDayClick(dayMs()) }
                 } else {
-                    rows.getOrNull(index - strip.size)?.let { eventRow(it, false) }
+                    // The day's open tasks follow its events, capped by the same measured fit.
+                    val event = rows.getOrNull(index - strip.size)
+                    val task = tasks.getOrNull(index - strip.size - rows.size)
+                    if (event != null) {
+                        eventRow(event, false)
+                    } else if (task != null) {
+                        taskRow(task, false)
+                    }
                 }
             }
         }
+    }
+}
+
+/**
+ * One open task due that day, the agenda task row compressed to the day box: the round checkbox
+ * glyph leads the summary in the calendar color. Like the event rows, a tap opens the day — the
+ * box's own interaction — not a sheet.
+ */
+@Composable
+private fun PlannerTaskRow(
+    task: Task,
+    color: Color,
+    oneLine: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(color.copy(alpha = 0.12f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TaskCheckboxGlyph(
+            isDone = false,
+            color = color,
+            contentDescription = null,
+            onToggle = null,
+            size = 12.dp
+        )
+        Text(
+            text = task.summary,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = !oneLine,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 4.dp),
+        )
     }
 }
 

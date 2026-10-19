@@ -2,21 +2,30 @@ package org.onekash.kashcal.ui.components.weekview
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
@@ -25,14 +34,21 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.rememberTextMeasurer
 import org.onekash.kashcal.R
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.ui.components.AgendaWeekBarLogic
+import org.onekash.kashcal.ui.components.TaskCheckboxGlyph
 import org.onekash.kashcal.util.DateTimeUtils
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * Displays one day column of the time grid, placing timed events by start time and duration.
@@ -46,6 +62,10 @@ import java.time.LocalDate
  * @param now returns the grid's current time in epoch ms ([rememberGridMinuteClock]), read here
  *   so a minute tick recomposes the column, not the page that gave it [date]; events that have
  *   ended by then fade, and the column is today's when [date] is that time's date
+ * @param timedTasks open tasks with a timed DUE; each renders as a slim chip at its due time.
+ *   All-day and undated tasks never arrive — the agenda and the Tasks screen show those.
+ * @param taskColorById calendar color by id, tinting the task chips
+ * @param onTaskClick called with the tapped task, for the quick view
  * @param compact draws the 7-day view's compact [EventBlock].
  * @param maxVisibleOverlap side-by-side slots shown before the badge
  * @param onOverflowClick called with the group's hidden events when the badge is tapped
@@ -58,6 +78,8 @@ import java.time.LocalDate
 fun DayColumn(
     date: LocalDate,
     events: List<DisplayEvent>,
+    timedTasks: List<Task> = emptyList(),
+    taskColorById: Map<Long, Int> = emptyMap(),
     hourHeight: Dp = WeekViewUtils.HOUR_HEIGHT,
     now: () -> Long,
     showEventEmojis: Boolean = true,
@@ -67,6 +89,7 @@ fun DayColumn(
     compact: Boolean = false,
     cascade: Boolean = false,
     onEventClick: (DisplayEvent) -> Unit,
+    onTaskClick: (Task) -> Unit = {},
     onOverflowClick: (List<DisplayEvent>) -> Unit,
     onEmptyTap: (LocalDate, Int, Int) -> Unit = { _, _, _ -> },  // (date, hour, minute)
     onEventDragStart: ((DisplayEvent, Offset) -> Unit)? = null,
@@ -214,6 +237,26 @@ fun DayColumn(
             }
         }
 
+        // Timed-due tasks at their due time, drawn above the event blocks: a slim chip, distinct
+        // from the filled event blocks, opening the task quick view. The full 24-hour grid
+        // starts at [startHour], so a due minute always maps inside the column.
+        timedTasks.forEach { task ->
+            key("task_${task.id}") {
+                val dueTs = task.dueTs ?: return@forEach
+                val due = Instant.ofEpochMilli(dueTs).atZone(ZoneId.systemDefault())
+                val minutesFromStart = (due.hour * 60 + due.minute) - startHour * 60
+                TaskTimeGridBlock(
+                    task = task,
+                    color = Color(taskColorById[task.calendarId] ?: 0xFF6200EE.toInt()),
+                    isPast = dueTs < nowMs,
+                    onClick = { onTaskClick(task) },
+                    modifier = Modifier
+                        .offset(y = hourHeight * (minutesFromStart / 60f))
+                        .padding(horizontal = BLOCK_MARGIN)
+                )
+            }
+        }
+
         groupedEvents.forEach { group ->
             val (visibleEvents, overflowCount) = WeekViewUtils.groupForDisplay(group, maxVisibleOverlap)
 
@@ -295,4 +338,50 @@ private fun Modifier.badgeAtStartWithin(columnWidth: Dp, start: Dp): Modifier = 
     val placeable = measurable.measure(constraints.copy(minWidth = 0))
     val x = minOf(start.roundToPx(), columnWidth.roundToPx() - placeable.width).coerceAtLeast(0)
     layout(placeable.width, placeable.height) { placeable.placeRelative(x, 0) }
+}
+
+/**
+ * One timed task in the day column: a slim rounded chip outlined in the calendar color over a
+ * light tint, its checkbox glyph leading the summary — visibly not a filled event block. The
+ * glyph is static here; completion happens in the quick view the chip opens.
+ */
+@Composable
+private fun TaskTimeGridBlock(
+    task: Task,
+    color: Color,
+    isPast: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val done = task.isDone
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 22.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.12f))
+            .border(1.dp, color, RoundedCornerShape(6.dp))
+            .alpha(if (done || isPast) 0.6f else 1f)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TaskCheckboxGlyph(
+            isDone = done,
+            color = color,
+            contentDescription = null,
+            onToggle = null,
+            size = 12.dp
+        )
+        Text(
+            text = task.summary,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textDecoration = if (done) TextDecoration.LineThrough else null,
+            modifier = Modifier.padding(start = 4.dp)
+        )
+    }
 }

@@ -566,14 +566,6 @@ class KashCalDataStore(
         setPreference(PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS, value)
     }
 
-    /** Whether the Month and Agenda views carry a week-number column or caption. */
-    val viewOptWeekNumbers: Flow<Boolean>
-        get() = getPreference(PreferencesKeys.VIEW_OPT_WEEK_NUMBERS, false)
-
-    suspend fun setViewOptWeekNumbers(value: Boolean) {
-        setPreference(PreferencesKeys.VIEW_OPT_WEEK_NUMBERS, value)
-    }
-
     /** Whether the Agenda view lists completed tasks next to the open ones (default off). */
     val viewOptAgendaCompletedTasks: Flow<Boolean>
         get() = getPreference(PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS, false)

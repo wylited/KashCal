@@ -675,7 +675,7 @@ class CalDavAccountDiscoveryService @Inject constructor(
                     href = calDavCalendar.url,
                     displayName = calDavCalendar.displayName,
                     color = parseColor(calDavCalendar.color, index),
-                    supportsVTodo = "VTODO" in calDavCalendar.supportedComponents,
+                    supportedComponents = calDavCalendar.supportedComponents,
                     isReadOnly = calDavCalendar.isReadOnly
                 )
             }
@@ -796,7 +796,7 @@ class CalDavAccountDiscoveryService @Inject constructor(
                         displayName = discoveredCalendar.displayName,
                         color = discoveredCalendar.color,
                         isReadOnly = discoveredCalendar.isReadOnly,
-                        components = if (discoveredCalendar.supportsVTodo) "VEVENT,VTODO" else "VEVENT"
+                        components = Calendar.componentsFrom(discoveredCalendar.supportedComponents)
                     )
                     calendarRepository.updateCalendar(updated)
                     updated
@@ -811,7 +811,7 @@ class CalDavAccountDiscoveryService @Inject constructor(
                         isReadOnly = discoveredCalendar.isReadOnly,
                         isDefault = isFirst,
                         isVisible = true,
-                        components = if (discoveredCalendar.supportsVTodo) "VEVENT,VTODO" else "VEVENT"
+                        components = Calendar.componentsFrom(discoveredCalendar.supportedComponents)
                     )
                     val calendarId = calendarRepository.createCalendar(newCalendar)
                     isFirst = false

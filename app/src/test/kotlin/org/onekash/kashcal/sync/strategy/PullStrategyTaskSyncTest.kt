@@ -22,7 +22,6 @@ import org.onekash.kashcal.data.db.entity.SyncStatus
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.data.preferences.KashCalDataStore
 import org.onekash.kashcal.data.repository.CalendarRepository
-import org.onekash.kashcal.domain.generator.OccurrenceGenerator
 import org.onekash.kashcal.sync.client.CalDavClient
 import org.onekash.kashcal.sync.client.model.CalDavEvent
 import org.onekash.kashcal.sync.client.model.CalDavResult

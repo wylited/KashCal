@@ -3,6 +3,7 @@ package org.onekash.kashcal.ui.screens.tasks
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import org.onekash.kashcal.R
 import org.onekash.kashcal.data.db.entity.Calendar
 import org.onekash.kashcal.data.db.entity.Task
+import org.onekash.kashcal.ui.components.taskReadsAsAllDay
 import org.onekash.kashcal.ui.shared.contrastForegroundOn
 import org.onekash.kashcal.util.DateTimeUtils
 import java.time.Instant
@@ -109,12 +114,16 @@ fun TasksScreen(
             )
         }
 
-        // Priority band chips: the row chips' colors in band form.
+        // Priority band chips: the row chips' colors in band form. Five chips overflow a phone
+        // width, so the row scrolls: unscrollable, the last chip is measured with only the
+        // leftover width and its label stacks one character per line. Start-aligned, since a
+        // centered arrangement overflows left of scroll position 0.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             FilterChip(
                 selected = priorityBand == TaskPriorityBand.ANY,
@@ -275,27 +284,39 @@ private fun TaskCheckbox(
     onToggle: () -> Unit,
 ) {
     val checkColor = contrastForegroundOn(color)
+    // The 48dp touch target with Role.Checkbox + toggleable state, so a11y services see a
+    // checkbox; the visual stays the 24dp circle.
     Box(
         modifier = Modifier
-            .size(24.dp)
-            .clip(CircleShape)
-            .background(if (isDone) color else Color.Transparent)
-            .border(
-                width = 2.dp,
-                color = if (isDone) color else MaterialTheme.colorScheme.onSurfaceVariant,
-                shape = CircleShape
+            .size(48.dp)
+            .toggleable(
+                value = isDone,
+                role = Role.Checkbox,
+                onValueChange = { onToggle() }
             )
-            .clickable(onClick = onToggle)
             .semantics { this.contentDescription = contentDescription },
         contentAlignment = Alignment.Center
     ) {
-        if (isDone) {
-            Icon(
-                imageVector = Icons.Default.Check,
-                contentDescription = null,
-                tint = checkColor,
-                modifier = Modifier.size(16.dp)
-            )
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(if (isDone) color else Color.Transparent)
+                .border(
+                    width = 2.dp,
+                    color = if (isDone) color else MaterialTheme.colorScheme.onSurfaceVariant,
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isDone) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = checkColor,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
@@ -308,14 +329,17 @@ private fun TaskDueChip(
     timePattern: String,
 ) {
     val whenTs = task.whenTs ?: return
+    // Only a date-placed value renders date-only: a real all-day DUE, or a DTSTART fallback
+    // stored at UTC midnight — the same rule [WidgetDataRepository.toWidgetTask] applies.
+    val isAllDayDue = taskReadsAsAllDay(task)
     val containerColor = when {
         isOverdue -> MaterialTheme.colorScheme.error
-        isToday(whenTs, task.dueIsAllDay) -> MaterialTheme.colorScheme.primaryContainer
+        isToday(whenTs, isAllDayDue) -> MaterialTheme.colorScheme.primaryContainer
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val contentColor = when {
         isOverdue -> MaterialTheme.colorScheme.onError
-        isToday(whenTs, task.dueIsAllDay) -> MaterialTheme.colorScheme.onPrimaryContainer
+        isToday(whenTs, isAllDayDue) -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
@@ -324,7 +348,7 @@ private fun TaskDueChip(
         contentColor = contentColor
     ) {
         Text(
-            text = dueChipLabel(whenTs, task.dueIsAllDay, timePattern),
+            text = dueChipLabel(whenTs, isAllDayDue, timePattern),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
@@ -332,7 +356,7 @@ private fun TaskDueChip(
     }
 }
 
-/** The date, with the time when the due is timed. */
+/** The date, with the time when the placement value is timed. */
 @Composable
 private fun dueChipLabel(whenTs: Long, isAllDay: Boolean, timePattern: String): String {
     val dateText = DateTimeUtils.formatEventDateShort(whenTs, isAllDay)
@@ -341,8 +365,9 @@ private fun dueChipLabel(whenTs: Long, isAllDay: Boolean, timePattern: String): 
 }
 
 /**
- * True when the placement moment falls on today: an all-day value reads as its UTC calendar
- * date, matching the grouping, so "today's" chip survives west-of-UTC afternoons.
+ * True when the placement moment falls on today: a date-placed value (an all-day due, or a
+ * UTC-midnight DTSTART fallback) reads as its UTC calendar date, matching the grouping, so
+ * "today's" chip survives west-of-UTC afternoons; a timed value reads in the device zone.
  */
 private fun isToday(whenTs: Long, isAllDay: Boolean): Boolean {
     val zone = if (isAllDay) ZoneOffset.UTC else ZoneId.systemDefault()

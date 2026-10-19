@@ -34,16 +34,20 @@ internal const val WIDGET_HEADER_GLYPH_SIZE_DP = 24
  * centered in a full 48dp clickable Box, which meets the touch-target guidance and gives equal
  * inset on every side; a header that wants the glyph symmetric with its top edge sets its end
  * padding equal to its top padding.
+ *
+ * @param action the widget action the tap deep-links into MainActivity with; defaults to
+ *   [ACTION_CREATE_EVENT]. The tasks widget passes [ACTION_OPEN_TASKS] so "+" lands on the
+ *   Tasks view, where tasks are created.
  */
 @Composable
-fun WidgetAddButton() {
+fun WidgetAddButton(action: String = ACTION_CREATE_EVENT) {
     Box(
         modifier = GlanceModifier
             .size(WIDGET_ADD_BUTTON_TOUCH_TARGET_DP.dp)
             .clickable(
                 actionStartActivity<MainActivity>(
                     parameters = actionParametersOf(
-                        ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_CREATE_EVENT
+                        ActionParameters.Key<String>(EXTRA_ACTION) to action
                     )
                 )
             ),

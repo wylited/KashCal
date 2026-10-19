@@ -50,6 +50,9 @@ object TestDataStoreFactory {
     ): KashCalDataStore = mockk<KashCalDataStore> {
         every { timeFormat } returns MutableStateFlow(KashCalDataStore.TIME_FORMAT_SYSTEM)
         every { theme } returns MutableStateFlow(KashCalDataStore.THEME_SYSTEM)
+        every { viewOptAgendaCompletedTasks } returns MutableStateFlow(false)
+        every { viewOptHideWeekends } returns MutableStateFlow(false)
+        every { viewOptMonthTaskBadge } returns MutableStateFlow(true)
         every { firstDayOfWeek } returns MutableStateFlow(KashCalDataStore.FIRST_DAY_SYSTEM)
         every { this@mockk.enabledDeviceCalendarIds } returns MutableStateFlow(enabledDeviceCalendarIds)
         every { this@mockk.deviceCalendarsEnabled } returns MutableStateFlow(deviceCalendarsEnabled)

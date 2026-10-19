@@ -37,8 +37,9 @@ import org.onekash.kashcal.ui.util.DayPagerUtils
 /**
  * Renders the agenda widget: today's date header over the event list, or an empty state.
  *
- * Open tasks due today (or overdue) interleave into the list after the all-day events and
- * before the timed events, matching the in-app agenda's day ordering, each with its checkbox.
+ * Open tasks due today (or overdue) interleave into the list in the widget's own all-day →
+ * tasks → timed order, each with its checkbox; the in-app agenda picks up task rows with the
+ * Tasks surfaces, not from this widget's layout.
  *
  * @param currentDate the formatted date for the header
  * @param showEventEmojis whether titles get auto-detected emojis
@@ -313,10 +314,13 @@ private fun OverflowIndicator(count: Int) {
 // Intent extra keys and action values
 const val EXTRA_ACTION = "widget_action"
 const val EXTRA_EVENT_ID = "widget_event_id"
+const val EXTRA_TASK_ID = "widget_task_id"
 const val EXTRA_OCCURRENCE_TS = "widget_occurrence_ts"
 const val EXTRA_IS_DEVICE_EVENT = "widget_is_device_event"
 
 const val ACTION_SHOW_EVENT = "show_event"
+const val ACTION_SHOW_TASK = "show_task"
+const val ACTION_OPEN_TASKS = "open_tasks"
 const val ACTION_CREATE_EVENT = "create_event"
 const val ACTION_GO_TO_TODAY = "go_to_today"
 const val ACTION_OPEN_SEARCH = "open_search"

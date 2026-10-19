@@ -1527,6 +1527,8 @@
     <string name="task_status_cancelled">Cancelled</string>
     <string name="task_quickview_status">Status</string>
     <string name="task_quickview_due">Due</string>
+    <string name="task_save_failed">Failed to save task</string>
+    <string name="task_calendar_lost_vtodo">This calendar no longer accepts tasks. Pick a task list to move it.</string>
     <string name="tasks_widget_empty">No open tasks</string>
 
     <!-- YearOverlay -->

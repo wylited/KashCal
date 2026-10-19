@@ -1,6 +1,7 @@
 package org.onekash.kashcal.ui.screens.monthfull
 
 import androidx.compose.ui.graphics.Color
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.ui.components.declinedCardAlpha
 import org.onekash.kashcal.ui.shared.contrastForegroundOn
@@ -148,6 +149,8 @@ sealed interface SlotContent {
         val isEndOfRun: Boolean,
     ) : SlotContent
     data class CellEvent(val displayEvent: DisplayEvent) : SlotContent
+    /** One open task due that day, placed after the day's events. */
+    data class CellTask(val task: Task) : SlotContent
 }
 
 data class WeekSlotRender(
@@ -164,12 +167,15 @@ data class WeekSlotRender(
  * the bottom slot of every day is never a bar. Each day's single-day events then fill its free
  * slots in [eventOrderRank] order, then by startTs. What doesn't fit, including a bar left
  * without a lane, is counted in [WeekSlotRender.hiddenCounts] for every day it covers; no slot
- * is held back for the count.
+ * is held back for the count. [tasksByDayCode]'s open tasks then follow, at most two per day in
+ * its remaining free slots; a day whose slots are full shows no task rows, and the "+N" count
+ * stays events-only.
  */
 fun computeMonthFullWeekRender(
     weekDayCodes: List<Int>,
     eventsByDayCode: Map<Int, List<DisplayEvent>>,
     rows: Int,
+    tasksByDayCode: Map<Int, List<Task>> = emptyMap(),
 ): WeekSlotRender {
     val numSlots = rows.coerceAtLeast(1)
     val layout = computeWeekSpans(weekDayCodes, eventsByDayCode, maxLanes = minOf(MAX_LANES, numSlots - 1))
@@ -206,10 +212,18 @@ fun computeMonthFullWeekRender(
 
         val freeSlots = (0 until numSlots).filter { grid[it][col] === SlotContent.Empty }
         val shown = minOf(cellEvents.size, freeSlots.size)
+        var cursor = 0
         for (i in 0 until shown) {
-            grid[freeSlots[i]][col] = SlotContent.CellEvent(cellEvents[i])
+            grid[freeSlots[cursor++]][col] = SlotContent.CellEvent(cellEvents[i])
         }
         hidden[col] += cellEvents.size - shown
+
+        // The day's open tasks follow its events, at most two, in the slots the events left.
+        for (task in tasksByDayCode[dayCode].orEmpty().take(MAX_TASK_ROWS_PER_DAY)) {
+            if (cursor < freeSlots.size) {
+                grid[freeSlots[cursor++]][col] = SlotContent.CellTask(task)
+            }
+        }
     }
 
     return WeekSlotRender(
@@ -224,6 +238,7 @@ fun WeekSlotRender.shownEvents(col: Int): List<DisplayEvent> = slots.mapNotNull 
     when (val slot = row[col]) {
         is SlotContent.BarSegment -> slot.span.displayEvent
         is SlotContent.CellEvent -> slot.displayEvent
+        is SlotContent.CellTask -> null
         SlotContent.Empty -> null
     }
 }
@@ -256,6 +271,9 @@ private fun eventOrderRank(event: DisplayEvent): Int = when {
     event.isAllDay && event.isFree -> 1
     else -> 2
 }
+
+/** Task rows a day cell shows at most, after its events. */
+const val MAX_TASK_ROWS_PER_DAY = 2
 
 // ============================================================
 // Identity key

@@ -12,8 +12,8 @@ import org.onekash.kashcal.data.preferences.PreferencesKeys
 class ExportablePreferencesTest {
 
     @Test
-    fun `allow list contains exactly 49 keys`() {
-        assertEquals(49, ExportablePreferences.KEYS.size)
+    fun `allow list contains exactly 48 keys`() {
+        assertEquals(48, ExportablePreferences.KEYS.size)
     }
 
     @Test
@@ -22,7 +22,6 @@ class ExportablePreferencesTest {
             PreferencesKeys.VIEW_ORDER,
             PreferencesKeys.VIEW_HIDDEN,
             PreferencesKeys.VIEW_OPT_HIDE_WEEKENDS,
-            PreferencesKeys.VIEW_OPT_WEEK_NUMBERS,
             PreferencesKeys.VIEW_OPT_AGENDA_COMPLETED_TASKS,
             PreferencesKeys.VIEW_OPT_MONTH_TASK_BADGE,
         )

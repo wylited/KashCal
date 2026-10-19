@@ -457,7 +457,7 @@ private fun resolveFormTime(dateMillis: Long, hour: Int, minute: Int, zone: Zone
 }
 
 /** The calendar date [millis] falls on in the device's zone. */
-private fun deviceLocalDate(millis: Long): LocalDate =
+internal fun deviceLocalDate(millis: Long): LocalDate =
     Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
 
 /** True when two form dates fall on one device-local day; producers encode dates differently. */

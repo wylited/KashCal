@@ -193,6 +193,7 @@ class CalDavSyncWorkerTest {
             reminderScheduler = reminderScheduler,
             eventReader = eventReader,
             pendingOperationsDao = pendingOperationsDao,
+            pendingTaskOperationsDao = mockk(relaxed = true),
             syncSessionStore = syncSessionStore,
             syncLogsDao = syncLogsDao,
             iCloudUrlMigration = iCloudUrlMigration,

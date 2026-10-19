@@ -10,6 +10,7 @@ import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.collections.immutable.persistentSetOf
 import org.onekash.kashcal.data.calendar_provider.DeviceCalendar
 import org.onekash.kashcal.data.db.entity.Calendar
+import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.data.preferences.DefaultCalendar
 import org.onekash.kashcal.domain.changes.RecentChangeItem
 import org.onekash.kashcal.domain.model.DisplayEvent
@@ -61,6 +62,13 @@ data class HomeUiState(
     val loadedMonths: PersistentSet<Int> = persistentSetOf(),
     /** Years whose year-view dots finished loading, so swiping back to one doesn't re-query. */
     val loadedYears: PersistentSet<Int> = persistentSetOf(),
+    // === TASK BADGES (pre-cached for the month grids, like [eventDots]) ===
+    /**
+     * Open tasks due each day, keyed like [eventDots]: "YYYY-MM" ([getDotsKey]) to a map of day
+     * of month to the due tasks (agenda placement day, `due ?? dtstart`). The compact month
+     * badges a non-empty day and the full-height grid lists the first two rows from it.
+     */
+    val monthTaskBadges: ImmutableMap<String, ImmutableMap<Int, ImmutableList<Task>>> = persistentMapOf(),
 
     // === SELECTED DAY STATE ===
     /** Selected date in epoch millis, 0 when none. */
@@ -134,6 +142,11 @@ data class HomeUiState(
     val searchQuery: String = "",
     /** Search results, Room and device events, each with its display timestamp. */
     val searchResults: ImmutableList<SearchResult> = persistentListOf(),
+    /**
+     * Tasks matching the query, open ones before completed, the reader's `due ?? dtstart` order
+     * within each. The date filter doesn't apply: task placement is a due day, not a range.
+     */
+    val searchTaskResults: ImmutableList<Task> = persistentListOf(),
     /**
      * Date filter for search. [DateFilter.Upcoming], the default with no chip selected, skips
      * past events; [DateFilter.AnyTime] includes them.
@@ -305,6 +318,8 @@ data class HomeUiState(
     val firstDayOfWeek: Int = java.util.Calendar.SUNDAY,
     /** Whether the month grid shows week numbers. */
     val showWeekNumbers: Boolean = false,
+    /** Whether the Week and Planner grids drop Saturday and Sunday (Views settings). */
+    val hideWeekends: Boolean = false,
     /** Puts the event form's tag row above the notes; false puts it between notes and guests. */
     val tagsAboveNotes: Boolean = false,
     /** Whether the Agenda view's top week bar is expanded (shown), the default. */
@@ -345,6 +360,11 @@ data class HomeUiState(
     fun getEventColors(year: Int, month: Int, day: Int): ImmutableList<Int> {
         val key = getDotsKey(year, month)
         return eventDots[key]?.get(day) ?: persistentListOf()
+    }
+
+    /** Returns the month's open-task badges (day of month to due tasks), empty when unloaded. */
+    fun getMonthTaskBadges(year: Int, month: Int): ImmutableMap<Int, ImmutableList<Task>> {
+        return monthTaskBadges[getDotsKey(year, month)] ?: persistentMapOf()
     }
 
     /** Returns [Calendar.isVisible], the source of truth; true for an unknown id. */

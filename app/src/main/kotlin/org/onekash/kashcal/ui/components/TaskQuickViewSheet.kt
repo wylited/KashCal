@@ -320,12 +320,15 @@ private fun statusLabel(status: String): String = when (status) {
     else -> stringResource(R.string.task_status_open)
 }
 
-/** The due line: the date, with the time when the due is timed. */
+/** The due line: the date, with the time when the placement value is timed. */
 @Composable
 private fun dueValueLabel(task: Task, timePattern: String): String {
     val whenTs = task.whenTs ?: return ""
-    val dateText = DateTimeUtils.formatEventDateShort(whenTs, task.dueIsAllDay)
-    val timeText = DateTimeUtils.formatEventTime(whenTs, task.dueIsAllDay, timePattern)
+    // Date-placed values (an all-day due, or a UTC-midnight DTSTART fallback) render
+    // date-only; [taskReadsAsAllDay] is the same rule the list and widgets read by.
+    val isAllDay = taskReadsAsAllDay(task)
+    val dateText = DateTimeUtils.formatEventDateShort(whenTs, isAllDay)
+    val timeText = DateTimeUtils.formatEventTime(whenTs, isAllDay, timePattern)
     return if (timeText.isEmpty()) dateText else "$dateText $timeText"
 }
 

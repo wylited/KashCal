@@ -183,6 +183,8 @@ class PlannerViewTest {
                         onDayClick = { calls.dayClicks += it },
                         onDayHeaderClick = { calls.headers += it },
                         onZoomChange = { calls.zooms += it; zoom = it },
+                        tasksByDayCode = emptyMap(),
+                        calendarColorById = emptyMap(),
                     )
                 }
             }
