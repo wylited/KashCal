@@ -514,10 +514,13 @@ class RRuleAdversarialTest {
     fun `EXDATE excludes all occurrences`() = runTest {
         val now = System.currentTimeMillis()
         val startTs = now
-        // YYYYMMDD EXDATEs (UTC days) for each of the 5 occurrences.
+        // YYYYMMDD EXDATEs for each of the 5 occurrences. DATE codes are floating
+        // (RFC 5545 §3.12.2): the engine reads them in the event's timezone, so the
+        // codes must be built there — in UTC they disagree with the occurrence dates
+        // whenever the device zone is ahead of UTC past its midnight cutoff.
         val dates = (0..4).map { day ->
             val ts = startTs + day * 86400000L
-            val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+            val cal = java.util.Calendar.getInstance()
             cal.timeInMillis = ts
             String.format("%04d%02d%02d",
                 cal.get(java.util.Calendar.YEAR),

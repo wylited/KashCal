@@ -26,6 +26,8 @@ import org.onekash.kashcal.data.db.entity.SyncStatus
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.data.repository.AccountRepository
 import org.onekash.kashcal.domain.model.AccountProvider
+import org.onekash.kashcal.sync.scheduler.SyncScheduler
+import org.onekash.kashcal.widget.WidgetUpdateManager
 
 /**
  * Tests [TaskRepository]'s offline-first writes against mocked DAOs: the local-account
@@ -40,6 +42,8 @@ class TaskRepositoryTest {
     private lateinit var pendingTaskOperationsDao: PendingTaskOperationsDao
     private lateinit var calendarsDao: CalendarsDao
     private lateinit var accountRepository: AccountRepository
+    private lateinit var syncScheduler: SyncScheduler
+    private lateinit var widgetUpdateManager: WidgetUpdateManager
     private lateinit var repository: TaskRepository
 
     private val caldavCalendar = Calendar(
@@ -91,6 +95,8 @@ class TaskRepositoryTest {
         pendingTaskOperationsDao = mockk(relaxed = true)
         calendarsDao = mockk()
         accountRepository = mockk()
+        syncScheduler = mockk(relaxed = true)
+        widgetUpdateManager = mockk(relaxed = true)
 
         every { database.tasksDao() } returns tasksDao
         every { database.pendingTaskOperationsDao() } returns pendingTaskOperationsDao
@@ -116,7 +122,39 @@ class TaskRepositoryTest {
         coEvery { accountRepository.getAccountById(2L) } returns
             Account(provider = AccountProvider.CALDAV, email = "user@example.com")
 
-        repository = TaskRepository(database, accountRepository)
+        repository = TaskRepository(
+            database,
+            accountRepository,
+            syncScheduler,
+            widgetUpdateManager
+        )
+    }
+
+    // ========== Post-write triggers ==========
+
+    /**
+     * The task-not-syncing regression: a mutation of a server-calendar task must schedule the
+     * sync that drains its queued operation (the periodic schedule alone left a completed
+     * task unpushed for hours), and widgets must repaint for local changes too.
+     */
+    @Test
+    fun `a server-calendar update schedules an expedited sync and repaints widgets`() = runTest {
+        coEvery { tasksDao.getById(5L) } returns task(caldavUrl = "https://caldav.example.com/user/tasks/t.ics")
+        coEvery { calendarsDao.getById(1L) } returns caldavCalendar
+        repository.toggleDone(task(caldavUrl = "https://caldav.example.com/user/tasks/t.ics"))
+
+        coVerify { syncScheduler.requestExpeditedSync(forceFullSync = false) }
+        coVerify { widgetUpdateManager.updateAllWidgets() }
+    }
+
+    @Test
+    fun `a local-account write repaints widgets without requesting a sync`() = runTest {
+        coEvery { tasksDao.getById(5L) } returns task(calendarId = 3L)
+        coEvery { calendarsDao.getById(3L) } returns localCalendar
+        repository.toggleDone(task(calendarId = 3L))
+
+        coVerify(exactly = 0) { syncScheduler.requestExpeditedSync(any()) }
+        coVerify { widgetUpdateManager.updateAllWidgets() }
     }
 
     // ========== Create ==========

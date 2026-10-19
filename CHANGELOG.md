@@ -8,6 +8,8 @@ Your address book gets a window, too. The contacts your CardDAV accounts already
 
 And the views themselves stopped being a fixed menu. Settings has a new Views page: drag the calendar views into your own order, hide the ones you never open, and tune each one — no weekends, week numbers, completed tasks in the Agenda, badges in the month.
 
+Fixed: task edits — completing, creating, moving — reached the server only at the next periodic sync, so a ticked task could sit unpushed for hours. Every task change now schedules its sync immediately.
+
 ### Everything in this release
 
 - Added two-way sync for task lists (VTODO): iCloud Reminders and generic `/tasks/` collections on CalDAV servers now sync their to-dos both ways, with an offline push queue that retries and lets the server's copy win when both sides changed

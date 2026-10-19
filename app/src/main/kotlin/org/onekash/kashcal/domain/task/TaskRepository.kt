@@ -7,6 +7,8 @@ import org.onekash.kashcal.data.db.entity.SyncStatus
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.data.repository.AccountRepository
 import org.onekash.kashcal.domain.model.AccountProvider
+import org.onekash.kashcal.sync.scheduler.SyncScheduler
+import org.onekash.kashcal.widget.WidgetUpdateManager
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -14,16 +16,22 @@ import javax.inject.Singleton
 /**
  * Writes tasks and queues their sync operations, the task counterpart of [EventWriter]'s
  * offline-first discipline: every write lands in Room at once and reaches the server when the
- * next sync pushes [PendingTaskOperation]s.
+ * sync it schedules pushes [PendingTaskOperation]s. Every mutation ends by scheduling that
+ * sync (mirroring [org.onekash.kashcal.domain.coordinator.EventCoordinator]'s post-edit
+ * expedited request) and repainting widgets — without the schedule call a queued operation
+ * waits for the next periodic sync, so a completed task could sit unpushed for hours.
  *
  * One exception to the queue: a task of the on-device [AccountProvider.LOCAL] account has no
  * server to reach, so its rows are marked SYNCED and no operation is queued — the push would
- * otherwise never drain it, because local accounts are never synced.
+ * otherwise never drain it, because local accounts are never synced. Local writes still
+ * repaint widgets.
  */
 @Singleton
 class TaskRepository @Inject constructor(
     private val database: KashCalDatabase,
-    private val accountRepository: AccountRepository
+    private val accountRepository: AccountRepository,
+    private val syncScheduler: SyncScheduler,
+    private val widgetUpdateManager: WidgetUpdateManager
 ) {
     private val tasksDao by lazy { database.tasksDao() }
     private val pendingTaskOperationsDao by lazy { database.pendingTaskOperationsDao() }
@@ -49,6 +57,7 @@ class TaskRepository @Inject constructor(
         if (!isLocal) {
             queueOperation(saved, PendingTaskOperation.OPERATION_CREATE)
         }
+        notifyChanged(needsServerSync = !isLocal)
         saved
     }
 
@@ -82,6 +91,7 @@ class TaskRepository @Inject constructor(
                 if (neverOnServer) PendingTaskOperation.OPERATION_CREATE else PendingTaskOperation.OPERATION_UPDATE
             )
         }
+        notifyChanged(needsServerSync = !isLocal)
         row
     }
 
@@ -97,6 +107,7 @@ class TaskRepository @Inject constructor(
         if (isLocal || task.caldavUrl == null) {
             pendingTaskOperationsDao.deleteForTask(task.id)
             tasksDao.deleteById(task.id)
+            notifyChanged(needsServerSync = false)
         } else {
             tasksDao.markForDeletion(task.id, System.currentTimeMillis())
             queueOperation(
@@ -104,6 +115,7 @@ class TaskRepository @Inject constructor(
                 PendingTaskOperation.OPERATION_DELETE,
                 targetUrl = task.caldavUrl
             )
+            notifyChanged(needsServerSync = true)
         }
     }
 
@@ -159,6 +171,7 @@ class TaskRepository @Inject constructor(
                 sourceCalendarId = source.id
             )
         }
+        notifyChanged(needsServerSync = !bothLocal)
         moved
     }
 
@@ -216,6 +229,20 @@ class TaskRepository @Inject constructor(
         if (calendar == null) return false
         val account = accountRepository.getAccountById(calendar.accountId) ?: return false
         return account.provider == AccountProvider.LOCAL
+    }
+
+    /**
+     * Announces a finished mutation: widgets repaint at once (a local task change is visible
+     * with no server), and a server-calendar change requests an expedited sync so the queued
+     * operation pushes immediately instead of waiting for the periodic schedule. Rapid
+     * consecutive edits share one sync — [SyncScheduler.requestExpeditedSync] replaces a
+     * queued one.
+     */
+    private suspend fun notifyChanged(needsServerSync: Boolean) {
+        widgetUpdateManager.updateAllWidgets()
+        if (needsServerSync) {
+            syncScheduler.requestExpeditedSync(forceFullSync = false)
+        }
     }
 
     /** Mirrors [EventWriter]'s UID scheme, so tasks and events share one namespace shape. */
