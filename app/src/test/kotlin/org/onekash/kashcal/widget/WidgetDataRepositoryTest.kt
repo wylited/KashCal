@@ -554,6 +554,53 @@ class WidgetDataRepositoryTest {
         assertEquals(expectedCode, allDay.dayCode)
     }
 
+    @Test
+    fun `getOpenTasks sorts undefined priority after P1 through P9`() = runTest {
+        val zone = ZoneId.systemDefault()
+        val due = LocalDate.now().plusDays(1).atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+
+        stubTasks(
+            listOf(
+                createTask(1L, "Undefined", dueTs = due, priority = 0),
+                createTask(2L, "Lowest", dueTs = due, priority = 9),
+                createTask(3L, "Highest", dueTs = due, priority = 1)
+            )
+        )
+
+        val result = repository.getOpenTasks(limit = 8)
+        assertEquals(listOf("Highest", "Lowest", "Undefined"), result.map { it.title })
+    }
+
+    @Test
+    fun `getTodayTasks sorts undefined priority after defined ones`() = runTest {
+        val zone = ZoneId.systemDefault()
+        val due = LocalDate.now().atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+
+        stubTasks(
+            listOf(
+                createTask(1L, "Undefined", dueTs = due, priority = 0),
+                createTask(2L, "Defined", dueTs = due, priority = 1)
+            )
+        )
+
+        val result = repository.getTodayTasks()
+        assertEquals(listOf("Defined", "Undefined"), result.map { it.title })
+    }
+
+    @Test
+    fun `DTSTART-only UTC-midnight task places on its UTC calendar day as all-day`() = runTest {
+        val today = LocalDate.now()
+        val dtStartUtcMidnight = today.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val expectedCode = today.year * 10000 + today.monthValue * 100 + today.dayOfMonth
+
+        stubTasks(listOf(createTask(1L, "Dtstart only", dtStartTs = dtStartUtcMidnight)))
+
+        val result = repository.getOpenTasks(limit = 8)
+        val task = result.single()
+        assertTrue(task.isAllDay)
+        assertEquals(expectedCode, task.dayCode)
+    }
+
     // ========== Helper Methods ==========
 
     private fun createDisplayEvent(
@@ -596,6 +643,7 @@ class WidgetDataRepositoryTest {
         title: String,
         dueTs: Long? = null,
         dueIsAllDay: Boolean = false,
+        dtStartTs: Long? = null,
         status: String = Task.STATUS_NEEDS_ACTION,
         priority: Int = 0,
         syncStatus: SyncStatus = SyncStatus.SYNCED
@@ -608,6 +656,7 @@ class WidgetDataRepositoryTest {
         priority = priority,
         dueTs = dueTs,
         dueIsAllDay = dueIsAllDay,
+        dtStartTs = dtStartTs,
         syncStatus = syncStatus,
         dtstamp = System.currentTimeMillis()
     )

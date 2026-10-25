@@ -13,6 +13,7 @@ import org.onekash.kashcal.data.repository.CalendarRepository
 import org.onekash.kashcal.domain.model.AccountProvider
 import org.onekash.kashcal.domain.sync.RetryDelays
 import org.onekash.kashcal.sync.client.CalDavClient
+import org.onekash.kashcal.sync.client.encodedPathSegment
 import org.onekash.kashcal.sync.client.model.CalDavResult
 import org.onekash.kashcal.sync.parser.icaldav.ICalTodoMapper
 import javax.inject.Inject
@@ -44,8 +45,12 @@ data class TaskPushResult(
  *   mirroring [PushStrategy]: server-side drift rewrote the resource, but the user asked to
  *   delete it. Only a second 412 abandons (server-wins).
  * - MOVE: PUT into the target calendar, then DELETE of the source resource — CalDAV has no
- *   MOVE method, so the task exists somewhere at every step. A re-run PUTs the same UID at
- *   the same target URL again, overwriting the first copy. A move into the local account
+ *   MOVE method, so the task exists somewhere at every step. A re-run after a partial first
+ *   attempt (target PUT landed, source delete failed retryably) PUTs the same UID at the
+ *   same target URL again; the server answers 412 because the copy is already there, so the
+ *   existing copy is adopted — its etag is fetched and the source delete proceeds, which
+ *   finishes the move; an etag fetch that answers 404 means the copy vanished again, so a
+ *   plain re-PUT runs rather than failing the operation. A move into the local account
  *   sends no PUT: from the server's perspective it is a copy-then-delete, so only the source
  *   resource is deleted and the local row is the surviving copy. A move out of the local
  *   account only creates the target copy, as there is no server resource to delete.
@@ -196,7 +201,7 @@ class TaskPushStrategy @Inject constructor(
         tasksDao.update(bumped)
         val icalData = serialize(bumped)
 
-        Log.d(TAG, "Creating task on server: ${bumped.summary} (${bumped.uid})")
+        Log.d(TAG, "Creating task on server: uid=${bumped.uid}")
         val result = client.createEvent(calendar.caldavUrl, bumped.uid, icalData)
 
         return when {
@@ -206,7 +211,7 @@ class TaskPushStrategy @Inject constructor(
                 tasksDao.markCreatedOnServerWithCopy(
                     bumped.id, url, etag, icalData, System.currentTimeMillis()
                 )
-                Log.d(TAG, "Task created successfully: $url")
+                Log.d(TAG, "Task created successfully at ${filenameOf(url)}")
                 TaskOpResult.Success(created = 1, pushedTaskId = bumped.id)
             }
             result.isConflict() -> TaskOpResult.Conflict
@@ -253,7 +258,7 @@ class TaskPushStrategy @Inject constructor(
                     }
                     // The in-memory task keeps etag=null; the PUT uses effectiveEtag.
                     tasksDao.updateEtag(task.id, fetched)
-                    Log.d(TAG, "Recovered task etag via PROPFIND: ${fetched.take(8)}...")
+                    Log.d(TAG, "Recovered task ${task.id} etag via PROPFIND")
                     effectiveEtag = fetched
                 }
                 is CalDavResult.Error -> {
@@ -272,7 +277,7 @@ class TaskPushStrategy @Inject constructor(
         val bumped = task.copy(sequence = task.sequence + 1)
         tasksDao.update(bumped)
         val icalData = serialize(bumped)
-        Log.d(TAG, "Updating task on server: ${bumped.summary} with etag='$effectiveEtag'")
+        Log.d(TAG, "Updating task on server: uid=${bumped.uid}")
         val result = client.updateEvent(caldavUrl, icalData, effectiveEtag)
 
         return when {
@@ -312,7 +317,7 @@ class TaskPushStrategy @Inject constructor(
             return TaskOpResult.Success(deleted = 1)
         }
 
-        Log.d(TAG, "Deleting task from server: ${task?.summary ?: "unknown"} with etag='${task?.etag.orEmpty()}'")
+        Log.d(TAG, "Deleting task from server: uid=${task?.uid ?: "unknown"}")
         val result = client.deleteEvent(caldavUrl, task?.etag.orEmpty())
 
         return when {
@@ -325,7 +330,7 @@ class TaskPushStrategy @Inject constructor(
             result.isConflict() -> {
                 // 412: the resource exists but the If-Match etag no longer matches. Refetch
                 // the etag and retry the delete once, mirroring [PushStrategy].
-                Log.w(TAG, "412 on delete for ${task?.summary ?: "unknown"}, fetching fresh etag for retry")
+                Log.w(TAG, "412 on delete of uid=${task?.uid ?: "unknown"}, fetching fresh etag for retry")
                 val freshEtagResult = client.fetchEtag(caldavUrl)
                 when {
                     // Removed elsewhere between the delete and the refetch: done.
@@ -338,13 +343,13 @@ class TaskPushStrategy @Inject constructor(
                         val freshEtag = freshEtagResult.getOrNull()
                         if (freshEtag.isNullOrEmpty()) {
                             // No etag to retry with: server-wins, like a second 412.
-                            Log.w(TAG, "fetchEtag returned no etag for delete of ${task?.summary ?: "unknown"}")
+                            Log.w(TAG, "fetchEtag returned no etag for delete of uid=${task?.uid ?: "unknown"}")
                             TaskOpResult.Conflict
                         } else {
                             val retryResult = client.deleteEvent(caldavUrl, freshEtag)
                             when {
                                 retryResult.isSuccess() || retryResult.isNotFound() -> {
-                                    Log.d(TAG, "412 delete retry succeeded for ${task?.summary ?: "unknown"}")
+                                    Log.d(TAG, "412 delete retry succeeded for uid=${task?.uid ?: "unknown"}")
                                     task?.let { tasksDao.deleteById(it.id) }
                                     TaskOpResult.Success(deleted = 1)
                                 }
@@ -355,7 +360,7 @@ class TaskPushStrategy @Inject constructor(
                                         ?: return TaskOpResult.Error(
                                             -1, "Unexpected result type from delete retry", false
                                         )
-                                    Log.e(TAG, "412 delete retry failed for ${task?.summary ?: "unknown"}: ${error.message}")
+                                    Log.e(TAG, "412 delete retry failed for uid=${task?.uid ?: "unknown"}: ${error.message}")
                                     TaskOpResult.Error(error.code, error.message, error.isRetryable)
                                 }
                             }
@@ -375,8 +380,10 @@ class TaskPushStrategy @Inject constructor(
     /**
      * Moves the task by CREATE into the target calendar and DELETE of the source resource; the
      * row's URL and etag are rewritten to the target copy when both writes land. A failed
-     * source delete leaves the operation queued: the retry PUTs over the target copy (same
-     * UID, same URL) and tries the source again.
+     * source delete leaves the operation queued: the retry's PUT meets the target copy already
+     * there (same UID, same URL), answers 412, and the existing copy is adopted — its etag is
+     * fetched and the source delete is tried again; an adopt whose etag fetch answers 404
+     * (the copy vanished again) re-PUTs plainly instead of failing the operation.
      *
      * Two edges need no server-to-server pair. A move INTO the local account is, from the
      * server's perspective, a copy-then-delete: the source resource is deleted and the local
@@ -410,7 +417,7 @@ class TaskPushStrategy @Inject constructor(
             val sourceUrl = operation.targetUrl ?: task.caldavUrl
             var deleted = 0
             if (sourceUrl != null && !sourceIsLocal) {
-                Log.d(TAG, "MOVE to local: deleting source resource $sourceUrl")
+                Log.d(TAG, "MOVE to local: deleting source resource ${filenameOf(sourceUrl)}")
                 val deleteResult = client.deleteEvent(sourceUrl, task.etag.orEmpty())
                 if (deleteResult.isError() && !deleteResult.isNotFound()) {
                     // A 404 source is already gone; any other failure is retried with the
@@ -442,21 +449,78 @@ class TaskPushStrategy @Inject constructor(
         val icalData = serialize(bumped)
 
         Log.d(TAG, "MOVE: creating task ${bumped.uid} in target calendar $targetCalendarId")
-        val createResult = client.createEvent(targetCalendar.caldavUrl, bumped.uid, icalData)
-        if (createResult.isError()) {
-            val error = createResult as CalDavResult.Error
-            if (createResult.isConflict()) return TaskOpResult.Conflict
-            Log.e(TAG, "MOVE create failed (${error.code}): ${error.message}")
-            return TaskOpResult.Error(error.code, error.message, error.isRetryable)
+        var createResult = client.createEvent(targetCalendar.caldavUrl, bumped.uid, icalData)
+        var targetUrl: String
+        var etag: String?
+        // Bounds the 412-adopt/404-vanish cycle: one plain re-PUT after the adopted copy
+        // disappears mid-adopt; a second vanish gives up retryably instead of looping.
+        var rePutsAfterVanishedAdopt = 0
+        while (true) {
+            when {
+                createResult.isSuccess() -> {
+                    val (url, createdEtag) = createResult.getOrNull()
+                        ?: return TaskOpResult.Error(-1, "Unexpected null result from move create", false)
+                    targetUrl = url
+                    etag = createdEtag
+                }
+                // 412: the target URL already holds this UID's resource — the mark of a partial
+                // first attempt (its target PUT landed, its source delete failed retryably).
+                // Abandoning here would strand that copy for the next pull to ingest as a
+                // duplicate, so adopt it as the created copy and finish the move.
+                createResult is CalDavResult.Error && createResult.code == 412 -> {
+                    targetUrl =
+                        "${targetCalendar.caldavUrl.trimEnd('/')}/${encodedPathSegment("${bumped.uid}.ics")}"
+                    Log.w(TAG, "MOVE target exists (412), adopting the copy at ${filenameOf(targetUrl)}")
+                    when (val fetchResult = client.fetchEtag(targetUrl)) {
+                        is CalDavResult.Success -> etag = fetchResult.data
+                        is CalDavResult.Error -> {
+                            if (fetchResult.code != 404) {
+                                Log.e(
+                                    TAG,
+                                    "MOVE adopt etag fetch failed (${fetchResult.code}): ${fetchResult.message}"
+                                )
+                                return TaskOpResult.Error(
+                                    fetchResult.code,
+                                    "Adopting existing move target failed: ${fetchResult.message}",
+                                    fetchResult.isRetryable
+                                )
+                            }
+                            // 404 on adopt: the copy vanished between the PUT and the PROPFIND
+                            // (deleted elsewhere), so there is nothing to adopt. Fall through
+                            // to a plain re-PUT instead of failing the operation for good.
+                            if (rePutsAfterVanishedAdopt >= 1) {
+                                return TaskOpResult.Error(
+                                    -1,
+                                    "Move target kept appearing and vanishing",
+                                    true
+                                )
+                            }
+                            rePutsAfterVanishedAdopt++
+                            Log.w(
+                                TAG,
+                                "MOVE adopt found no copy (404) at ${filenameOf(targetUrl)}, re-PUTting"
+                            )
+                            createResult =
+                                client.createEvent(targetCalendar.caldavUrl, bumped.uid, icalData)
+                            continue
+                        }
+                    }
+                }
+                createResult.isConflict() -> return TaskOpResult.Conflict
+                else -> {
+                    val error = createResult as CalDavResult.Error
+                    Log.e(TAG, "MOVE create failed (${error.code}): ${error.message}")
+                    return TaskOpResult.Error(error.code, error.message, error.isRetryable)
+                }
+            }
+            break
         }
-        val (url, etag) = createResult.getOrNull()
-            ?: return TaskOpResult.Error(-1, "Unexpected null result from move create", false)
 
         var deleted = 0
         if (!sourceIsLocal) {
             val sourceUrl = operation.targetUrl ?: task.caldavUrl
             if (sourceUrl != null) {
-                Log.d(TAG, "MOVE: deleting source resource $sourceUrl")
+                Log.d(TAG, "MOVE: deleting source resource ${filenameOf(sourceUrl)}")
                 val deleteResult = client.deleteEvent(sourceUrl, task.etag.orEmpty())
                 if (deleteResult.isError() && !deleteResult.isNotFound()) {
                     // A 404 source is already gone; any other failure is retried with the
@@ -470,9 +534,9 @@ class TaskPushStrategy @Inject constructor(
         }
 
         tasksDao.markCreatedOnServerWithCopy(
-            bumped.id, url, etag, icalData, System.currentTimeMillis()
+            bumped.id, targetUrl, etag, icalData, System.currentTimeMillis()
         )
-        Log.d(TAG, "MOVE Phase 1: Task created successfully at $url")
+        Log.d(TAG, "MOVE Phase 1: Task created successfully at ${filenameOf(targetUrl)}")
         return TaskOpResult.Success(created = 1, deleted = deleted, pushedTaskId = bumped.id)
     }
 
@@ -530,9 +594,18 @@ class TaskPushStrategy @Inject constructor(
         return account.provider == AccountProvider.LOCAL
     }
 
-    /** Regenerates the whole VTODO from the row; unknown lines ride along, so nothing is lost. */
+    /**
+     * Builds the PUT body from the stored server copy when there is one ([ICalTodoMapper
+     * .buildPushBody]): this task's master VTODO is regenerated from the row's modeled
+     * columns and spliced into the stored body, so unmodeled properties (ATTENDEE, ORGANIZER,
+     * CATEGORIES, LOCATION, URL, GEO, CLASS, VALARM, X-*), the task's RECURRENCE-ID
+     * exceptions and cohabiting components (VEVENTs, other VTODOs, VTIMEZONEs) survive a PUT
+     * that replaces the whole resource. Without a usable stored body the row regenerates a
+     * single-VTODO VCALENDAR, as before.
+     */
     private fun serialize(task: Task): String =
-        generator.generate(ICalTodoMapper.toICalTodo(task), preserveDtstamp = false)
+        ICalTodoMapper.buildPushBody(task, task.rawIcal, generator)
+            ?: generator.generate(ICalTodoMapper.toICalTodo(task), preserveDtstamp = false)
 
     /** Outcome of pushing one pending task operation. */
     private sealed class TaskOpResult {

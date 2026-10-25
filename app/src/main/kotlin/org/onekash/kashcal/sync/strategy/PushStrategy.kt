@@ -534,7 +534,7 @@ class PushStrategy @Inject constructor(
         // Captures the exception set as of now; only those are marked synced after.
         val (icalData, serializedExceptions) = serializeEventWithExceptions(event)
 
-        Log.d(TAG, "Updating event on server: ${event.title} with etag='$effectiveEtag'")
+        Log.d(TAG, "Updating event ${event.id} (uid ${event.uid}) on server")
 
         val result = clientToUse.updateEvent(caldavUrl, icalData, effectiveEtag)
 
@@ -991,7 +991,7 @@ class PushStrategy @Inject constructor(
         }
 
         val etag = event?.etag.orEmpty()
-        Log.d(TAG, "Deleting event from server: ${event?.title ?: "unknown"} with etag='$etag'")
+        Log.d(TAG, "Deleting event ${event?.id ?: "unknown"} (uid ${event?.uid ?: "unknown"}) from server")
 
         val result = clientToUse.deleteEvent(caldavUrl, etag)
 

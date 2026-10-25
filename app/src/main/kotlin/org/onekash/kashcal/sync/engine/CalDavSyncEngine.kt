@@ -25,8 +25,11 @@ import org.onekash.kashcal.sync.strategy.PullStrategy
 import org.onekash.kashcal.sync.strategy.PushResult
 import org.onekash.kashcal.sync.strategy.PushStrategy
 import org.onekash.kashcal.sync.strategy.TaskPushStrategy
-import org.onekash.kashcal.util.maskEmail
 import javax.inject.Inject
+import org.onekash.kashcal.sync.client.model.CalDavResult
+import org.onekash.kashcal.util.maskEmail
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Singleton
 
 /**
@@ -63,6 +66,13 @@ class CalDavSyncEngine @Inject constructor(
          */
         private const val MAX_CONFLICT_SYNC_CYCLES = 3
     }
+
+    /**
+     * Server calendar ids whose components were probed this process, so the one-time
+     * refresh in [refreshStaleComponents] never repeats a probe that answered.
+     */
+    private val probedComponentsCalendarIds = mutableSetOf<Long>()
+    private val probedComponentsMutex = Mutex()
 
     /**
      * Pushes, resolves conflicts for, and pulls one calendar.
@@ -104,7 +114,10 @@ class CalDavSyncEngine @Inject constructor(
         var anyConflictsAbandoned = false
 
         try {
-            // Step 1: push local changes.
+            // Step 0: refresh migration-seeded components, so the task steps below see the
+            // server's real supported-calendar-component-set.
+            val calendar = refreshStaleComponents(calendar, client)
+
             val pushResult = pushStrategy.pushForCalendar(calendar, client)
 
             when (pushResult) {
@@ -382,6 +395,7 @@ class CalDavSyncEngine @Inject constructor(
 
         for ((_, calendar) in calendars.withIndex()) {
             if (calendar.isReadOnly) {
+                val calendar = refreshStaleComponents(calendar, client)
                 // Read-only calendars have nothing to push, so they are only pulled.
                 val syncType = if (forceFullSync || calendar.syncToken == null) SyncType.FULL else SyncType.INCREMENTAL
                 val sessionBuilder = SyncSessionBuilder(
@@ -429,6 +443,19 @@ class CalDavSyncEngine @Inject constructor(
                         ))
                     }
                 }
+
+                // Step 3b: pull server tasks, mirroring the writable path; a read-only
+                // calendar's tasks never push, so nothing was pushed this cycle.
+                if (calendar.supportsVTodo) {
+                    val taskPull = pullStrategy.pullTasks(
+                        calendar, quirks, client, sessionBuilder, emptySet()
+                    )
+                    totalPullAdded += taskPull.added
+                    totalPullUpdated += taskPull.updated
+                    totalPullDeleted += taskPull.deleted
+                    sessionBuilder.addDeleted(taskPull.deleted)
+                }
+
                 val session = sessionBuilder.build()
                 syncSessionStore.add(session)
                 if (session.abandonedParseErrors > 0) {
@@ -589,6 +616,59 @@ class CalDavSyncEngine @Inject constructor(
             ))
         } catch (e: Exception) {
             Log.w(TAG, "Failed to log sync: ${e.message}")
+        }
+    }
+
+    /**
+     * Re-probes a server calendar still carrying the "VEVENT" components value seeded by
+     * [org.onekash.kashcal.data.db.migration.Migrations.MIGRATION_26_27]. Only account
+     * creation and calendar discovery write components otherwise, so without this a calendar
+     * that existed before schema 27 never learns it supports VTODOs and its tasks never sync.
+     *
+     * The probe reuses the discovery path, a Depth: 1 calendar-home listing on the
+     * collection itself, and persists the answer before any supportsVTodo check runs. It
+     * happens at most once per calendar per process: a listing that answers at all counts
+     * as probed — even when the server supports only VEVENT — while a failed listing is
+     * retried on a later sync. Non-HTTP calendars (local lists) keep their stored components.
+     *
+     * @return the calendar to sync, with refreshed components when the probe found them.
+     */
+    private suspend fun refreshStaleComponents(calendar: Calendar, client: CalDavClient): Calendar {
+        if (calendar.components != "VEVENT" || !calendar.caldavUrl.startsWith("http")) return calendar
+
+        val alreadyProbed = probedComponentsMutex.withLock { !probedComponentsCalendarIds.add(calendar.id) }
+        if (alreadyProbed) return calendar
+
+        return try {
+            when (val listing = client.listCalendars(calendar.caldavUrl)) {
+                is CalDavResult.Success -> {
+                    val probed = listing.data.firstOrNull {
+                        it.url.trimEnd('/') == calendar.caldavUrl.trimEnd('/')
+                    }
+                    if (probed == null) {
+                        calendar
+                    } else {
+                        val refreshed = calendar.copy(
+                            components = Calendar.componentsFrom(probed.supportedComponents)
+                        )
+                        calendarRepository.updateCalendar(refreshed)
+                        Log.d(TAG, "Refreshed components for calendar ${calendar.id}: ${refreshed.components}")
+                        refreshed
+                    }
+                }
+                is CalDavResult.Error -> {
+                    // A failed probe is retried on a later sync.
+                    probedComponentsMutex.withLock { probedComponentsCalendarIds.remove(calendar.id) }
+                    calendar
+                }
+            }
+        } catch (e: java.util.concurrent.CancellationException) {
+            probedComponentsMutex.withLock { probedComponentsCalendarIds.remove(calendar.id) }
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Components probe failed for calendar ${calendar.id}: ${e.message}")
+            probedComponentsMutex.withLock { probedComponentsCalendarIds.remove(calendar.id) }
+            calendar
         }
     }
 }

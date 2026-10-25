@@ -269,8 +269,11 @@ private fun ContactRow(
     contact: ContactListItem,
     onOpen: (String) -> Unit,
 ) {
-    // The chip is display-only: names stay A–Z sorted, an upcoming birthday just surfaces.
+    // The chips are display-only: names stay A–Z sorted, upcoming events just surface.
     val birthdayChipDays = contact.birthday
+        ?.let { daysUntilNextOccurrence(it, LocalDate.now()) }
+        ?.takeIf { it in 0..BIRTHDAY_WINDOW_DAYS }
+    val anniversaryChipDays = contact.anniversary
         ?.let { daysUntilNextOccurrence(it, LocalDate.now()) }
         ?.takeIf { it in 0..BIRTHDAY_WINDOW_DAYS }
     Row(
@@ -300,6 +303,23 @@ private fun ContactRow(
                     text = stringResource(
                         R.string.contact_birthday_chip,
                         contact.birthday.format(DateTimeFormatter.ofPattern("MMM d", Locale.getDefault()))
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+        if (anniversaryChipDays != null && contact.anniversary != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.tertiaryContainer
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.contact_anniversary_chip,
+                        contact.anniversary.format(DateTimeFormatter.ofPattern("MMM d", Locale.getDefault()))
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer,

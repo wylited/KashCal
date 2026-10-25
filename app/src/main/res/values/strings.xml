@@ -1463,7 +1463,6 @@
     <string name="contacts_search_hint">Search contacts</string>
     <string name="contacts_empty">No contacts found</string>
     <string name="contacts_permission_rationale">Allow contacts access to browse your CardDAV contacts.</string>
-    <string name="cd_contact_photo">Contact photo</string>
     <string name="contact_birthday_chip">🎂 %1$s</string>
     <string name="contact_anniversary_chip">💍 %1$s</string>
     <string name="contact_section_phones">Phones</string>
@@ -1530,6 +1529,10 @@
     <string name="task_save_failed">Failed to save task</string>
     <string name="task_calendar_lost_vtodo">This calendar no longer accepts tasks. Pick a task list to move it.</string>
     <string name="tasks_widget_empty">No open tasks</string>
+    <!-- Calendar picker in the task form when no writable VTODO-capable list exists -->
+    <string name="task_calendar_none_vtodo">No task lists available</string>
+    <!-- Shown when the task list itself has items but the active filters exclude them all -->
+    <string name="tasks_no_matches">No tasks match these filters</string>
 
     <!-- YearOverlay -->
     <string name="label_go_to_month">Go to month</string>

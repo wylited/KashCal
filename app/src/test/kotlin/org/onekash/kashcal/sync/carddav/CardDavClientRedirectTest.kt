@@ -159,4 +159,25 @@ class CardDavClientRedirectTest {
         assertTrue("$result", result is CalDavResult.Error)
         assertEquals("the redirect target is never requested", 1, server.requestCount)
     }
+
+    @Test
+    fun `cleartext goes only to the account's own host`() = runTest {
+        val account = HostileDavServer.httpServer()
+        val elsewhere = HostileDavServer.httpServer()
+        try {
+            val client = clientFor(account.url("/").toString())
+
+            val result = client.putContact(
+                elsewhere.url("/ab/default/c1.vcf").toString(),
+                vcard,
+                ContactPrecondition.IfAbsent
+            )
+
+            assertEquals(CalDavResult.CODE_TRANSPORT_REFUSED, (result as ContactUploadResult.Failed).code)
+            assertEquals("nothing reaches the other host", 0, elsewhere.requestCount)
+        } finally {
+            account.shutdown()
+            elsewhere.shutdown()
+        }
+    }
 }

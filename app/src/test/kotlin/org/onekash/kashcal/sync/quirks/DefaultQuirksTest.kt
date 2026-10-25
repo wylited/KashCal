@@ -650,6 +650,45 @@ END:VCALENDAR</cal:calendar-data>
         assertEquals("https://server.com:8443/cal/event.ics", url)
     }
 
+    @Test
+    fun `buildEventUrl keeps a same-origin absolute href verbatim`() {
+        val url = quirks.buildEventUrl(
+            "https://nextcloud.example.com/remote.php/dav/calendars/user/cal/event.ics",
+            "https://nextcloud.example.com/remote.php/dav/calendars/user/cal/"
+        )
+        assertEquals("https://nextcloud.example.com/remote.php/dav/calendars/user/cal/event.ics", url)
+    }
+
+    @Test
+    fun `buildEventUrl keeps a same-origin absolute href with an explicit port verbatim`() {
+        val url = quirks.buildEventUrl(
+            "https://server.com:8443/cal/event.ics",
+            "https://server.com:8443/dav/calendars/"
+        )
+        assertEquals("https://server.com:8443/cal/event.ics", url)
+    }
+
+    @Test
+    fun `buildEventUrl rewrites a cross-origin absolute href to the calendar origin`() {
+        val url = quirks.buildEventUrl(
+            "https://evil.example.com/steal/event.ics",
+            "https://nextcloud.example.com/remote.php/dav/calendars/user/cal/"
+        )
+        assertEquals("https://nextcloud.example.com/steal/event.ics", url)
+    }
+
+    @Test
+    fun `buildEventUrl rewrites an absolute href on the same host but another port or scheme`() {
+        assertEquals(
+            "https://nextcloud.example.com/cal/event.ics",
+            quirks.buildEventUrl("https://nextcloud.example.com:8443/cal/event.ics", "https://nextcloud.example.com/dav/cal/")
+        )
+        assertEquals(
+            "https://nextcloud.example.com/cal/event.ics",
+            quirks.buildEventUrl("http://nextcloud.example.com/cal/event.ics", "https://nextcloud.example.com/dav/cal/")
+        )
+    }
+
     // ========== shouldSkipCalendar tests ==========
 
     @Test

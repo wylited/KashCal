@@ -16,6 +16,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.onekash.kashcal.network.DavTransportGuard
 
 /**
  * Tests [DigestAuthenticator] (RFC 2617/7616 Digest authentication): challenge and auth-param
@@ -512,6 +513,57 @@ class DigestAuthenticatorTest {
         assertNotNull(
             "the same challenge over https is answered",
             https.authenticate(null, build401Response(challenge, requestUrl = "https://example.com/dav.php/"))
+        )
+    }
+
+    // ========== Challenges outside the account's origin ==========
+
+    @Test
+    fun `a challenge outside the account's origin is not answered`() {
+        val scoped = DigestAuthenticator(
+            "testuser", "testpass",
+            allowCleartext = true,
+            isAccountOrigin = DavTransportGuard.accountOriginRule("https://dav.example.com/")
+        )
+        val challenge = """Digest realm="dav", nonce="n1", qop="auth""""
+
+        assertNull(
+            "a poisoned off-origin URL draws no password-derived answer",
+            scoped.authenticate(null, build401Response(challenge, requestUrl = "https://evil.example.com/dav/steal.ics"))
+        )
+        assertNotNull(
+            "the same challenge on the account's own host is answered",
+            scoped.authenticate(null, build401Response(challenge, requestUrl = "https://dav.example.com/dav/"))
+        )
+    }
+
+    @Test
+    fun `cleartext stays answerable only on the account's own host`() {
+        val scoped = DigestAuthenticator(
+            "testuser", "testpass",
+            allowCleartext = true,
+            isAccountOrigin = DavTransportGuard.accountOriginRule("http://nas.local:5232/")
+        )
+        val challenge = """Digest realm="dav", nonce="n1""""
+
+        assertNull(
+            "another port is another origin",
+            scoped.authenticate(null, build401Response(challenge, requestUrl = "http://nas.local:8080/dav.php/"))
+        )
+        assertNotNull(
+            scoped.authenticate(null, build401Response(challenge, requestUrl = "http://nas.local:5232/dav.php/"))
+        )
+    }
+
+    @Test
+    fun `an authenticator built without an origin rule keeps the old scheme-only check`() {
+        val legacy = DigestAuthenticator("testuser", "testpass", allowCleartext = true)
+
+        assertNotNull(
+            legacy.authenticate(
+                null,
+                build401Response("""Digest realm="dav", nonce="n1"""", requestUrl = "https://anywhere.example.net/dav/")
+            )
         )
     }
 

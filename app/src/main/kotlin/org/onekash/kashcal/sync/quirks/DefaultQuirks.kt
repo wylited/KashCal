@@ -1,5 +1,6 @@
 package org.onekash.kashcal.sync.quirks
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.onekash.kashcal.sync.client.model.CalendarMetadataProbe
 import org.onekash.kashcal.sync.parser.CalDavXmlParser
 import java.util.Calendar
@@ -95,7 +96,7 @@ class DefaultQuirks(
 
     override fun buildEventUrl(href: String, calendarUrl: String): String {
         return if (href.startsWith("http")) {
-            href
+            pinServerHrefToOrigin(href, calendarUrl)
         } else {
             // scheme://host of calendarUrl.
             val baseHost = if (calendarUrl.contains("://")) {
@@ -192,4 +193,32 @@ internal fun matchesReservedCollection(
     if (segments.any { it in RESERVED_CALENDAR_SEGMENTS }) return true
     // Only the last path component qualifies, and it must be followed by `/` in the href.
     return terminalSegments.any { lower.endsWith("/$it/") }
+}
+
+/**
+ * Pins a server-supplied absolute href to [calendarUrl]'s origin. A same-origin href —
+ * same scheme, host and port, or a host [isSameServerHost] calls the same server, e.g.
+ * iCloud's numbered partitions — is kept verbatim; a cross-origin one is rewritten to the
+ * calendar's origin + the href's path, so a hostile or compromised listing can never make
+ * the client store, and later PUT to, a resource URL on another host. An href that doesn't
+ * parse is returned unchanged: the transport guard sends no credentials to it and follows
+ * it nowhere cross-origin, so it fails safe.
+ */
+internal fun pinServerHrefToOrigin(
+    href: String,
+    calendarUrl: String,
+    isSameServerHost: (calendarHost: String, hrefHost: String) -> Boolean =
+        { calendarHost, hrefHost -> calendarHost.equals(hrefHost, ignoreCase = true) },
+): String {
+    val parsed = href.toHttpUrlOrNull() ?: return href
+    val calendar = calendarUrl.toHttpUrlOrNull() ?: return href
+    val sameOrigin = parsed.scheme == calendar.scheme && parsed.port == calendar.port &&
+        (parsed.host.equals(calendar.host, ignoreCase = true) || isSameServerHost(calendar.host, parsed.host))
+    if (sameOrigin) return href
+    return parsed.newBuilder()
+        .scheme(calendar.scheme)
+        .host(calendar.host)
+        .port(calendar.port)
+        .build()
+        .toString()
 }

@@ -483,23 +483,20 @@ class OkHttpCalDavClientCalendarProbeTest {
     // ==================== Redirects ====================
 
     @Test
-    fun `redirect to another host is unreadable even when it answers 404`() = runTest {
+    fun `a redirect to another host is refused before the other host is ever asked`() = runTest {
         val requested = mockWebServer.url(CAL_PATH).newBuilder().host("localhost").build()
         val elsewhere = mockWebServer.url("/portal/").newBuilder().host("127.0.0.1").build()
         mockWebServer.enqueue(MockResponse().setResponseCode(302).setHeader("Location", elsewhere.toString()))
-        mockWebServer.enqueue(MockResponse().setResponseCode(404))
 
-        assertUnreadable(client.probeCalendarCollection(requested.toString()))
-    }
+        val result = client.probeCalendarCollection(requested.toString())
 
-    @Test
-    fun `redirect to another host is unreadable even when it answers not-a-calendar`() = runTest {
-        val requested = mockWebServer.url(CAL_PATH).newBuilder().host("localhost").build()
-        val elsewhere = mockWebServer.url(CAL_PATH).newBuilder().host("127.0.0.1").build()
-        mockWebServer.enqueue(MockResponse().setResponseCode(302).setHeader("Location", elsewhere.toString()))
-        enqueue207(multistatus(response(resourceType = "<d:resourcetype/>")))
-
-        assertUnreadable(client.probeCalendarCollection(requested.toString()))
+        // The transport guard refuses the cross-origin redirect itself, so whatever the
+        // other host would have answered never reaches the probe — the same refusal code a
+        // redirect loop gets, and the calendar is kept either way.
+        assertTrue("Expected an error, got $result", result is CalDavResult.Error)
+        assertEquals(CalDavResult.CODE_TRANSPORT_REFUSED, (result as CalDavResult.Error).code)
+        assertFalse("the calendar is kept", isCalendarGone(result))
+        assertEquals("only the original request is sent", 1, mockWebServer.requestCount)
     }
 
     @Test

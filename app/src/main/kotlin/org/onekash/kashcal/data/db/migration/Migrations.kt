@@ -1505,9 +1505,9 @@ object Migrations {
      * - `tasks` and `pending_task_operations`: the task store and its sync queue, empty on
      *   arrival and filled by the next pull.
      * - `tasks_fts`: FTS4 over task summary and description, with Room's content-sync triggers.
-     * - `calendars.components`: the collection's supported components, from the server probe on
-     *   the next sync; existing rows keep "VEVENT", so nothing changes until the probe runs.
-     *   Local lists take "VEVENT,VTODO" immediately.
+     * - `calendars.components`: the collection's supported components. Server calendars keep
+     *   the seeded "VEVENT" until the sync engine's one-time probe refreshes it; local lists
+     *   take "VEVENT,VTODO" immediately (accounts store provider lowercase, "local").
      * - `calendars.is_agenda_visible`: seeds 1, preserving the current behavior where an agenda
      *   item's visibility followed the calendar's single flag.
      *
@@ -1608,7 +1608,7 @@ object Migrations {
                 )
                 db.execSQL(
                     "UPDATE calendars SET components = 'VEVENT,VTODO' " +
-                        "WHERE account_id IN (SELECT id FROM accounts WHERE provider = 'LOCAL')"
+                        "WHERE account_id IN (SELECT id FROM accounts WHERE provider = 'local')"
                 )
 
                 // 3. Validation, before setTransactionSuccessful() so a throw rolls back

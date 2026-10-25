@@ -121,7 +121,7 @@ import javax.inject.Inject
 private const val TAG = "HomeViewModel"
 
 /** Upcoming window shown by the agenda view (90 days). */
-private const val AGENDA_WINDOW_MS = 90L * 24 * 60 * 60 * 1000
+internal const val AGENDA_WINDOW_MS = 90L * 24 * 60 * 60 * 1000
 
 private data class CalendarsSnapshot(
     val calendars: List<org.onekash.kashcal.data.db.entity.Calendar>,
@@ -200,7 +200,7 @@ data class MonthKey(val year: Int, val month: Int)
  * month either side plus the grid's leading and trailing days, so adjacent month-pager pages have
  * data mid-swipe.
  */
-private fun monthGridDayCodeRange(year: Int, month: Int): Pair<Int, Int> {
+internal fun monthGridDayCodeRange(year: Int, month: Int): Pair<Int, Int> {
     val prevMonth = LocalDate.of(year, month + 1, 1).minusMonths(1)
     val startDate = prevMonth.withDayOfMonth(1).minusDays(6)
     val nextMonth = LocalDate.of(year, month + 1, 1).plusMonths(1)
@@ -470,12 +470,15 @@ class HomeViewModel(
     private val quickViewTaskId = MutableStateFlow<Long?>(null)
 
     /**
-     * The active quick-view task, projected out of [tasks] so a toggle's new status or a
-     * background sync re-renders the sheet, and a deleted task closes it (null). The task twin
-     * of [quickViewEventLive].
+     * The active quick-view task, re-read by id whenever it changes, so a toggle's new status or
+     * a background sync re-renders the sheet and a deleted task closes it (null). Resolved by id
+     * rather than projected out of [tasks], whose agenda-domain list hides schedule-only
+     * calendars — a week-grid chip or a search result on such a calendar must still open the
+     * sheet. The task twin of [quickViewEventLive].
      */
     val quickViewTaskLive: StateFlow<Task?> =
-        combine(quickViewTaskId, tasks) { id, list -> id?.let { activeId -> list.firstOrNull { it.id == activeId } } }
+        quickViewTaskId
+            .flatMapLatest { id -> if (id == null) flowOf(null) else taskReader.observeTaskById(id) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     /** Opens the task form: creation when [taskId] is null, that task's edit otherwise. */
@@ -511,7 +514,17 @@ class HomeViewModel(
     fun toggleTaskDone(task: Task) {
         viewModelScope.launch {
             try {
-                withContext(ioDispatcher) { taskRepository.toggleDone(task) }
+                val updated = withContext(ioDispatcher) { taskRepository.toggleDone(task) }
+                _uiState.update { state ->
+                    if (state.searchTaskResults.any { it.id == updated.id }) {
+                        state.copy(
+                            searchTaskResults = state.searchTaskResults
+                                .map { if (it.id == updated.id) updated else it }
+                                .sortedBy { it.isDone }
+                                .toPersistentList()
+                        )
+                    } else state
+                }
                 widgetUpdateManager.updateAllWidgets("task_changed")
                 // The month badges count open tasks; completion changes them.
                 buildTaskBadges(_uiState.value.viewingYear, _uiState.value.viewingMonth)
@@ -556,6 +569,26 @@ class HomeViewModel(
                 ?: return@withContext Result.failure(IllegalStateException("No calendar selected"))
             val (dueTs, dueTimezone, dueIsAllDay) = formState.toDueFields()
             val existing = formState.editingTaskId?.let { taskReader.getTaskById(it) }
+
+            // A calendar change is refused before any write: [TaskRepository.move] validates
+            // only when called, after this update has committed, so pre-checking keeps an
+            // invalid target from stranding the row in the target calendar while the form
+            // shows the error. The checks mirror move()'s; move() re-checks on fresh rows.
+            if (existing != null && calendarId != existing.calendarId) {
+                val source = requireNotNull(eventReader.getCalendarById(existing.calendarId)) {
+                    "Source calendar not found: ${existing.calendarId}"
+                }
+                val target = requireNotNull(eventReader.getCalendarById(calendarId)) {
+                    "Target calendar not found: $calendarId"
+                }
+                require(!target.isReadOnly) {
+                    "Cannot move a task to a read-only calendar"
+                }
+                require(source.accountId == target.accountId) {
+                    "Cannot move a task to a calendar of a different account " +
+                        "(source ${source.accountId}, target ${target.accountId})"
+                }
+            }
 
             val row = (existing ?: Task(
                 // Blank: TaskRepository mints the @kashcal.onekash.org UID, so the form isn't a

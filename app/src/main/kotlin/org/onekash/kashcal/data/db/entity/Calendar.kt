@@ -156,5 +156,8 @@ data class Calendar(
                 .toList()
             return kept.ifEmpty { listOf("VEVENT") }.joinToString(",")
         }
+
+        /** The components local lists store: both VEVENT and VTODO, no server probe involved. */
+        const val COMPONENTS_VEVENT_VTODO = "VEVENT,VTODO"
     }
 }

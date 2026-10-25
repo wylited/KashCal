@@ -1,7 +1,9 @@
 package org.onekash.kashcal.domain.reader
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -187,7 +189,7 @@ class EventReader @Inject constructor(
                     calendarsById = calendars.associateBy { it.id }
                 )
             }
-        }.distinctUntilChanged()
+        }.flowOn(Dispatchers.IO).distinctUntilChanged()
     }
 
     suspend fun getExceptionsForMaster(masterEventId: Long): List<Event> {

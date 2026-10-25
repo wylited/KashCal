@@ -10,13 +10,16 @@ import org.onekash.icaldav.model.TodoStatus
 import org.onekash.icaldav.parser.ICalGenerator
 import org.onekash.icaldav.parser.ICalParser
 import org.onekash.kashcal.data.db.entity.SyncStatus
+import org.onekash.kashcal.data.db.entity.Task
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
  * [ICalTodoMapper] round trips: a parsed VTODO becomes a Task, the Task becomes a VTODO again,
  * and the modeled fields — priority 0–9, all four STATUS values, all-day and timed DUE, RRULE,
- * unknown property lines, SEQUENCE — survive parse → entity → generate.
+ * unknown property lines, SEQUENCE — survive parse → entity → generate. The push body builder
+ * ([ICalTodoMapper.buildPushBody]) is covered below: an edit patch of the stored server body
+ * that must preserve everything without a column.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [34])
@@ -174,6 +177,242 @@ class ICalTodoMapperTest {
         assertEquals(3L, entity.calendarId)
         assertEquals("https://srv/t/abc.ics", entity.caldavUrl)
         assertEquals("\"e1\"", entity.etag)
+    }
+
+    // ========== buildPushBody (the push patches the stored body) ==========
+
+    /** The generator TaskPushStrategy holds; same PRODID as event pushes. */
+    private val pushGenerator = ICalGenerator(prodId = "-//KashCal//KashCal 2.0//EN")
+
+    /** [task] over the master VTODO of a resource that may hold more components. */
+    private fun masterTask(ics: String): Task {
+        val master = parser.parseAllTodos(ics).getOrNull()
+            ?.firstOrNull { it.recurrenceId == null }
+            ?: error("no master VTODO parsed from:\n$ics")
+        return ICalTodoMapper.toEntity(
+            master, rawIcal = ics, calendarId = 7L, caldavUrl = "https://x/t1.ics", etag = "\"e1\""
+        )
+    }
+
+    private fun ics(vararg lines: String): String =
+        lines.joinToString("\r\n", postfix = "\r\n")
+
+    @Test
+    fun `an edit push preserves unmodeled properties and the VALARM of the stored component`() {
+        val raw = ics(
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Other//Client//EN",
+            "BEGIN:VTODO",
+            "UID:roundtrip@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "SUMMARY:Round trip",
+            "STATUS:NEEDS-ACTION",
+            "DUE:20261024T150000Z",
+            "LOCATION:Office",
+            "CATEGORIES:work,urgent",
+            "ORGANIZER;CN=Bob:mailto:bob@example.com",
+            "ATTENDEE;CN=Alice;PARTSTAT=NEEDS-ACTION:mailto:alice@example.com",
+            "URL:https://example.com/task",
+            "GEO:37.386013;-122.082932",
+            "CLASS:PRIVATE",
+            "X-CUSTOM-PROP:keep-me",
+            "BEGIN:VALARM",
+            "ACTION:DISPLAY",
+            "TRIGGER:-PT30M",
+            "DESCRIPTION:Reminder",
+            "END:VALARM",
+            "END:VTODO",
+            "END:VCALENDAR"
+        )
+        val edited = masterTask(raw).copy(
+            summary = "Renamed",
+            status = "COMPLETED",
+            percentComplete = 100,
+            completedTs = 1_764_000_000_000L
+        )
+
+        val body = ICalTodoMapper.buildPushBody(edited, raw, pushGenerator)
+            ?: error("buildPushBody returned null")
+
+        // Modeled columns are rewritten.
+        assertTrue(body.contains("SUMMARY:Renamed"))
+        assertTrue(body.contains("STATUS:COMPLETED"))
+        assertTrue(!body.contains("SUMMARY:Round trip"))
+        assertTrue(!body.contains("STATUS:NEEDS-ACTION"))
+        // Everything without a column rides verbatim.
+        assertTrue(body.contains("LOCATION:Office"))
+        assertTrue(body.contains("CATEGORIES:work,urgent"))
+        assertTrue(body.contains("ORGANIZER;CN=Bob:mailto:bob@example.com"))
+        assertTrue(body.contains("ATTENDEE;CN=Alice;PARTSTAT=NEEDS-ACTION:mailto:alice@example.com"))
+        assertTrue(body.contains("URL:https://example.com/task"))
+        assertTrue(body.contains("GEO:37.386013;-122.082932"))
+        assertTrue(body.contains("CLASS:PRIVATE"))
+        assertTrue(body.contains("X-CUSTOM-PROP:keep-me"))
+        // The VALARM sub-component survives.
+        assertTrue(body.contains("BEGIN:VALARM"))
+        assertTrue(body.contains("TRIGGER:-PT30M"))
+        assertTrue(body.contains("END:VALARM"))
+
+        // The patched body parses back to the edited task plus the preserved properties.
+        val reparsed = parser.parseAllTodos(body).getOrNull()?.single()
+        assertNotNull(reparsed)
+        assertEquals("Renamed", reparsed!!.summary)
+        assertEquals(TodoStatus.COMPLETED, reparsed.status)
+        assertEquals("Office", reparsed.location)
+        assertEquals(listOf("work", "urgent"), reparsed.categories)
+        assertEquals("alice@example.com", reparsed.attendees.single().email)
+    }
+
+    @Test
+    fun `an edit push keeps cohabiting VEVENT, exception VTODO and VTIMEZONE components`() {
+        val raw = ics(
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Test//EN",
+            "BEGIN:VTIMEZONE",
+            "TZID:Europe/Berlin",
+            "BEGIN:STANDARD",
+            "DTSTART:19701025T030000",
+            "TZOFFSETFROM:+0200",
+            "TZOFFSETTO:+0100",
+            "END:STANDARD",
+            "END:VTIMEZONE",
+            "BEGIN:VEVENT",
+            "UID:event-9@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "DTSTART:20260601T120000Z",
+            "DTEND:20260601T130000Z",
+            "SUMMARY:Cohabiting event",
+            "END:VEVENT",
+            "BEGIN:VTODO",
+            "UID:roundtrip@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "SUMMARY:Round trip",
+            "STATUS:NEEDS-ACTION",
+            "END:VTODO",
+            "BEGIN:VTODO",
+            "UID:roundtrip@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "RECURRENCE-ID;TZID=Europe/Berlin:20261026T120000",
+            "SUMMARY:Exception day",
+            "STATUS:COMPLETED",
+            "END:VTODO",
+            "END:VCALENDAR"
+        )
+        val edited = masterTask(raw).copy(summary = "Renamed")
+
+        val body = ICalTodoMapper.buildPushBody(edited, raw, pushGenerator)
+            ?: error("buildPushBody returned null")
+
+        // The cohabiting VEVENT rides untouched.
+        assertTrue(body.contains("SUMMARY:Cohabiting event"))
+        assertTrue(body.contains("BEGIN:VEVENT"))
+        // The stored VTIMEZONE rides untouched.
+        assertTrue(body.contains("TZID:Europe/Berlin"))
+        // Exactly two VTODOs: the replaced master and the preserved exception.
+        assertEquals(2, Regex("BEGIN:VTODO").findAll(body).count())
+        assertTrue(body.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261026T120000"))
+        assertTrue(body.contains("SUMMARY:Exception day"))
+        assertTrue(body.contains("SUMMARY:Renamed"))
+        assertTrue(!body.contains("SUMMARY:Round trip"))
+
+        val reparsed = parser.parseAllTodos(body).getOrNull().orEmpty()
+        assertEquals(2, reparsed.size)
+        assertEquals("Renamed", reparsed.first { it.recurrenceId == null }.summary)
+        assertEquals("Exception day", reparsed.first { it.recurrenceId != null }.summary)
+    }
+
+    @Test
+    fun `an unchanged all-day DTSTART without DUE survives a toggle-done push`() {
+        val raw = ics(
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Test//EN",
+            "BEGIN:VTODO",
+            "UID:roundtrip@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "SUMMARY:Round trip",
+            "STATUS:NEEDS-ACTION",
+            "DTSTART;VALUE=DATE:20261025",
+            "END:VTODO",
+            "END:VCALENDAR"
+        )
+        val edited = masterTask(raw).copy(
+            status = "COMPLETED",
+            percentComplete = 100,
+            completedTs = 1_764_000_000_000L
+        )
+
+        val body = ICalTodoMapper.buildPushBody(edited, raw, pushGenerator)
+            ?: error("buildPushBody returned null")
+
+        // The original DATE form is kept verbatim, not rebuilt as a UTC date-time.
+        assertTrue(body.contains("DTSTART;VALUE=DATE:20261025"))
+        assertTrue("DTSTART must stay a DATE", !Regex("DTSTART:\\d{8}T").containsMatchIn(body))
+        assertTrue(body.contains("STATUS:COMPLETED"))
+    }
+
+    @Test
+    fun `a moved DTSTART is regenerated instead of kept`() {
+        val raw = ics(
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Test//EN",
+            "BEGIN:VTODO",
+            "UID:roundtrip@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "SUMMARY:Round trip",
+            "STATUS:NEEDS-ACTION",
+            "DTSTART;VALUE=DATE:20261025",
+            "END:VTODO",
+            "END:VCALENDAR"
+        )
+        val edited = masterTask(raw).copy(dtStartTs = masterTask(raw).dtStartTs!! + 3_600_000L)
+
+        val body = ICalTodoMapper.buildPushBody(edited, raw, pushGenerator)
+            ?: error("buildPushBody returned null")
+
+        assertTrue("moved DTSTART must be regenerated", Regex("DTSTART:\\d{8}T\\d{6}Z").containsMatchIn(body))
+        assertTrue(!body.contains("DTSTART;VALUE=DATE:20261025"))
+    }
+
+    @Test
+    fun `a zoned DUE gets a VTIMEZONE when the stored body carries none`() {
+        val raw = ics(
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Test//EN",
+            "BEGIN:VTODO",
+            "UID:roundtrip@example.test",
+            "DTSTAMP:20261001T120000Z",
+            "SUMMARY:Round trip",
+            "DUE;TZID=Europe/Berlin:20261024T170000",
+            "END:VTODO",
+            "END:VCALENDAR"
+        )
+        val edited = masterTask(raw).copy(summary = "Renamed")
+
+        val body = ICalTodoMapper.buildPushBody(edited, raw, pushGenerator)
+            ?: error("buildPushBody returned null")
+
+        assertTrue(body.contains("DUE;TZID=Europe/Berlin:20261024T170000"))
+        assertTrue("missing VTIMEZONE must be added", body.contains("BEGIN:VTIMEZONE"))
+        assertTrue(body.contains("TZID:Europe/Berlin"))
+    }
+
+    @Test
+    fun `unmergeable stored bodies return null so the caller regenerates`() {
+        val valid = ics(
+            "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//EN",
+            "BEGIN:VTODO", "UID:roundtrip@example.test", "DTSTAMP:20261001T120000Z",
+            "SUMMARY:Round trip", "END:VTODO", "END:VCALENDAR"
+        )
+        val task = masterTask(valid)
+
+        assertNull(ICalTodoMapper.buildPushBody(task, null, pushGenerator))
+        assertNull(ICalTodoMapper.buildPushBody(task, "not an ics body at all", pushGenerator))
+        assertNull(ICalTodoMapper.buildPushBody(task, valid.replace("roundtrip@", "other-uid@"), pushGenerator))
     }
 
     private fun vtodo(prop: String? = null, extra: String? = null): String = listOf(

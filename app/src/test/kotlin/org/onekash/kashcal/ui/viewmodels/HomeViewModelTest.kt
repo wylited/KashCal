@@ -292,7 +292,9 @@ class HomeViewModelTest {
         dayCodeSequence: MutableList<Int>? = null,
         calendarProviderRepository: org.onekash.kashcal.data.calendar_provider.CalendarProviderRepository =
             org.onekash.kashcal.data.calendar_provider.FakeCalendarProviderRepository(),
-        context: android.content.Context = io.mockk.mockk(relaxed = true)
+        context: android.content.Context = io.mockk.mockk(relaxed = true),
+        taskReader: org.onekash.kashcal.domain.reader.TaskReader = io.mockk.mockk(relaxed = true),
+        taskRepository: org.onekash.kashcal.domain.task.TaskRepository = io.mockk.mockk(relaxed = true)
     ): HomeViewModel {
         val provider: () -> Int = if (dayCodeSequence != null) {
             { dayCodeSequence.removeAt(0) }
@@ -311,8 +313,8 @@ class HomeViewModelTest {
             deviceEventWriter = calendarProviderRepository.deviceEventWriter(dataStore),
             attendeeBackfill = io.mockk.mockk(relaxed = true),
             contactEmailReader = io.mockk.mockk(relaxed = true),
-            taskReader = io.mockk.mockk(relaxed = true),
-            taskRepository = io.mockk.mockk(relaxed = true),
+            taskReader = taskReader,
+            taskRepository = taskRepository,
             widgetUpdateManager = io.mockk.mockk(relaxed = true),
             context = context,
             ioDispatcher = testDispatcher,
@@ -1088,6 +1090,45 @@ class HomeViewModelTest {
         assertFalse(viewModel.uiState.value.isSearchActive)
         assertEquals("", viewModel.uiState.value.searchQuery)
         assertTrue(viewModel.uiState.value.searchResults.isEmpty())
+    }
+
+    @Test
+    fun `toggleTaskDone folds toggled row back into searchTaskResults`() = runTest {
+        val open = org.onekash.kashcal.data.db.entity.Task(
+            id = 5L,
+            uid = "task-5",
+            calendarId = 1L,
+            dtstamp = 0L,
+            summary = "Buy milk"
+        )
+        val done = open.copy(status = org.onekash.kashcal.data.db.entity.Task.STATUS_COMPLETED)
+        val taskRepository = io.mockk.mockk<org.onekash.kashcal.domain.task.TaskRepository>()
+        val taskReader = io.mockk.mockk<org.onekash.kashcal.domain.reader.TaskReader>()
+        // init collects both observeTasks domains; buildTaskBadges reads the range query.
+        every { taskReader.observeTasks(any()) } returns flowOf(emptyList())
+        coEvery { taskReader.getOpenTasksBetween(any(), any(), any()) } returns emptyList()
+        coEvery { taskReader.searchTasks(any()) } returns listOf(open)
+        coEvery { taskRepository.toggleDone(open) } returns done
+        coEvery { taskRepository.toggleDone(done) } returns open
+        val viewModel = createViewModel(taskReader = taskReader, taskRepository = taskRepository)
+        advanceUntilIdle()
+
+        viewModel.activateSearch()
+        viewModel.updateSearchQuery("milk")
+        advanceUntilIdle()
+
+        assertEquals(listOf(false), viewModel.uiState.value.searchTaskResults.map { it.isDone })
+
+        viewModel.toggleTaskDone(viewModel.uiState.value.searchTaskResults.first())
+        advanceUntilIdle()
+
+        assertEquals(listOf(true), viewModel.uiState.value.searchTaskResults.map { it.isDone })
+
+        // Toggling again reopens against the refreshed row, not the stale snapshot.
+        viewModel.toggleTaskDone(viewModel.uiState.value.searchTaskResults.first())
+        advanceUntilIdle()
+
+        assertEquals(listOf(false), viewModel.uiState.value.searchTaskResults.map { it.isDone })
     }
 
     @Test

@@ -167,6 +167,7 @@ import org.onekash.kashcal.ui.components.resolveScrollTargetIndex
 import org.onekash.kashcal.ui.components.TaskCheckboxGlyph
 import org.onekash.kashcal.ui.components.taskDueLabel
 import org.onekash.kashcal.ui.components.taskIsOverdue
+import org.onekash.kashcal.ui.components.taskPlacementDayCode
 import org.onekash.kashcal.ui.components.taskPriorityColor
 import org.onekash.kashcal.ui.components.TopBarTitleAction
 import org.onekash.kashcal.ui.components.TopBarTitleFormatter
@@ -194,12 +195,14 @@ import org.onekash.kashcal.ui.screens.insights.InsightsViewModel
 import org.onekash.kashcal.ui.util.DayPagerUtils
 import org.onekash.kashcal.ui.util.MonthPagerUtils
 import org.onekash.kashcal.ui.util.rememberDayPagerSyncCoordinator
+import org.onekash.kashcal.ui.viewmodels.AGENDA_WINDOW_MS
 import org.onekash.kashcal.ui.viewmodels.DateFilter
 import org.onekash.kashcal.ui.viewmodels.EditScope
 import org.onekash.kashcal.ui.viewmodels.AgendaUiState
 import org.onekash.kashcal.ui.viewmodels.HomeUiState
 import org.onekash.kashcal.ui.viewmodels.ViewMode
 import org.onekash.kashcal.ui.viewmodels.WeekEventsUiState
+import org.onekash.kashcal.ui.viewmodels.monthGridDayCodeRange
 import org.onekash.kashcal.ui.viewmodels.toScopeContext
 import org.onekash.kashcal.util.DateTimeUtils
 import java.text.SimpleDateFormat
@@ -761,6 +764,22 @@ fun HomeScreen(
 
                                 when (uiState.viewMode) {
                                     ViewMode.AGENDA -> {
+                                        // The agenda's 90-day window, the same span the events'
+                                        // query range covers ([HomeViewModel.AGENDA_WINDOW_MS]):
+                                        // the tasks flow is unwindowed, so open tasks placing past
+                                        // the window's last day drop here, as events do upstream.
+                                        val agendaWindowEndDayCode = remember(todayDayCode) {
+                                            DayPagerUtils.localDateToDayCode(
+                                                DayPagerUtils.dayCodeToLocalDate(todayDayCode)
+                                                    .plusDays(AGENDA_WINDOW_MS / (24 * 60 * 60 * 1000))
+                                            )
+                                        }
+                                        val agendaTasks = remember(tasks, agendaWindowEndDayCode) {
+                                            val zone = ZoneId.systemDefault()
+                                            tasks.filter { task ->
+                                                (taskPlacementDayCode(task, zone) ?: Int.MAX_VALUE) <= agendaWindowEndDayCode
+                                            }
+                                        }
                                         // Pinned week bar above the list, collapsed and expanded by
                                         // the title chevron (persisted). Tapping a date selects it
                                         // and scrolls the list to that day's header; otherwise the
@@ -779,7 +798,7 @@ fun HomeScreen(
                                                     // with, so the flat header indexes match.
                                                     val model = buildAgendaListModel(
                                                         agendaEvents.events,
-                                                        tasks,
+                                                        agendaTasks,
                                                         todayDayCode,
                                                         showAgendaCompletedTasks
                                                     )
@@ -818,13 +837,13 @@ fun HomeScreen(
                                         } else {
                                             val agendaModel = remember(
                                                 agendaEvents.events,
-                                                tasks,
+                                                agendaTasks,
                                                 todayDayCode,
                                                 showAgendaCompletedTasks
                                             ) {
                                                 buildAgendaListModel(
                                                     agendaEvents.events,
-                                                    tasks,
+                                                    agendaTasks,
                                                     todayDayCode,
                                                     showAgendaCompletedTasks
                                                 )
@@ -1005,9 +1024,22 @@ fun HomeScreen(
                                 val pageYear = pageCal.get(JavaCalendar.YEAR)
                                 val pageMonth = pageCal.get(JavaCalendar.MONTH)
 
+                                // Badges keyed by full day code over the same
+                                // [monthGridDayCodeRange] the events use, so leading and
+                                // trailing adjacent-month cells get task rows too — the
+                                // per-month badge store alone only names the page month.
                                 val pageTaskBadges = remember(uiState.monthTaskBadges, pageYear, pageMonth) {
-                                    uiState.getMonthTaskBadges(pageYear, pageMonth)
-                                        .mapKeys { (day, _) -> pageYear * 10000 + (pageMonth + 1) * 100 + day }
+                                    val (startDayCode, endDayCode) = monthGridDayCodeRange(pageYear, pageMonth)
+                                    buildMap {
+                                        for ((monthKey, dayMap) in uiState.monthTaskBadges) {
+                                            val year = monthKey.substring(0, 4).toInt()
+                                            val month = monthKey.substring(5, 7).toInt()
+                                            for ((day, dayTasks) in dayMap) {
+                                                val dayCode = year * 10000 + month * 100 + day
+                                                if (dayCode in startDayCode..endDayCode) put(dayCode, dayTasks)
+                                            }
+                                        }
+                                    }
                                 }
 
                                 MonthFullPage(

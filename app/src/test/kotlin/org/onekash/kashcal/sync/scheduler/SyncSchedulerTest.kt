@@ -358,6 +358,23 @@ class SyncSchedulerTest {
         assertEquals(1, workInfos.size)
     }
 
+    @Test
+    fun `requestExpeditedSync keeps an already queued or running sync`() {
+        // A second expedited request must not replace pending work. REPLACE cancelled a
+        // RUNNING worker mid-push — after it had marked a task operation IN_PROGRESS — and
+        // the replacement's push only selects PENDING operations, stranding the cancelled
+        // one until the hour-old stale recovery. KEEP drops the new request instead.
+        val firstId = scheduler.requestExpeditedSync()
+
+        val secondId = scheduler.requestExpeditedSync()
+
+        // Then - the first request's work is still the one pending under the unique name
+        val workInfos = workManager.getWorkInfosForUniqueWork(SyncScheduler.EXPEDITED_SYNC_WORK).get()
+        assertEquals(1, workInfos.size)
+        assertEquals(firstId, workInfos[0].id)
+        assertNotEquals(firstId, secondId)
+    }
+
     // ==================== Calendar-Specific Sync Tests ====================
 
     @Test

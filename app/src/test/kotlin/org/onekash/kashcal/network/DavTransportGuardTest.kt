@@ -1,5 +1,6 @@
 package org.onekash.kashcal.network
 
+import okhttp3.Credentials
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -25,10 +26,10 @@ import java.util.concurrent.TimeUnit
 /**
  * Tests [DavTransportGuard] on the wire through [HostileDavServer]: redirects are re-sent
  * with the same method, body and headers (a 303 only for a read), nothing goes over plain
- * http for an https account, credentials follow redirects, loops and one-shot bodies are
- * refused, a redirect without a Location is handed back, the caller sees the redirect chain,
- * and a refusal message names only masked hosts. Ends with [DavRedirectPolicy] and
- * [DavTransportGuard.allowsCleartext] on their own.
+ * http for an https account, credentials never leave the account's own origin, cross-origin
+ * redirects, loops and one-shot bodies are refused, a redirect without a Location is handed
+ * back, the caller sees the redirect chain, and a refusal message names only masked hosts.
+ * Ends with [DavRedirectPolicy] and [DavTransportGuard]'s origin rule on their own.
  */
 class DavTransportGuardTest {
 
@@ -56,6 +57,30 @@ class DavTransportGuardTest {
 
     private fun put(url: HttpUrl, body: String = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n") =
         Request.Builder().url(url).put(body.toRequestBody(ical)).header("If-Match", "\"etag-1\"").build()
+
+    /**
+     * A client wired the way the CalDAV factory wires an account's: the transport guard and
+     * Basic auth, both scoped to [accountUrl]'s origin.
+     */
+    private fun accountClient(accountUrl: String, allowCleartext: Boolean = false): OkHttpClient {
+        val origin = DavTransportGuard.accountOriginRule(accountUrl)
+        return HostileDavServer.trusting(OkHttpClient.Builder())
+            .installDavTransport(allowCleartext, origin)
+            .addNetworkInterceptor { chain ->
+                val request = chain.request()
+                val out = if (request.header("Authorization") == null &&
+                    DavTransportGuard.mayAttachCredentials(request.url, allowCleartext, origin)
+                ) {
+                    request.newBuilder()
+                        .header("Authorization", Credentials.basic("user", "secret", Charsets.UTF_8))
+                        .build()
+                } else {
+                    request
+                }
+                chain.proceed(out)
+            }
+            .build()
+    }
 
     // ---- same method, same body, same headers ----
 
@@ -232,23 +257,29 @@ class DavTransportGuardTest {
     }
 
     @Test
-    fun `an http account follows http redirects across ports with its credentials`() {
+    fun `an http account refuses a redirect to another port`() {
         val first = http()
         val second = http()
-        // Baikal's well-known drops the port the account uses.
+        // Baikal's well-known used to drop the port the account answers on; a browser
+        // treats a port change as another origin, and so does the guard now.
         first.enqueue(HostileDavServer.redirect(302, second.at("/dav.php").toString()))
-        second.enqueue(MockResponse().setResponseCode(207))
-        HostileDavServer.davClient(allowCleartext = true)
-            .send(Request.Builder().url(first.at("/.well-known/caldav")).method("PROPFIND", "<p/>".toRequestBody(xml)).build())
-            .use { assertEquals(207, it.code) }
+        try {
+            HostileDavServer.davClient(allowCleartext = true)
+                .send(Request.Builder().url(first.at("/.well-known/caldav")).method("PROPFIND", "<p/>".toRequestBody(xml)).build())
+                .close()
+            fail("expected a refusal")
+        } catch (e: DavTransportRefusedException) {
+            assertEquals(DavTransportRefusal.CROSS_ORIGIN_REDIRECT, e.reason)
+        }
         first.next()
-        assertNotNull(second.next().getHeader("Authorization"))
+        assertEquals("nothing reaches the other port", 0, second.requestCount)
     }
 
     @Test
     fun `an http account follows a redirect up to https`() {
         val plain = http()
         val secure = https()
+        // Baikal's well-known answers http with a redirect to https on the default port.
         plain.enqueue(HostileDavServer.redirect(308, secure.at("/dav/").toString()))
         secure.enqueue(MockResponse().setResponseCode(207))
         HostileDavServer.davClient(allowCleartext = true)
@@ -257,20 +288,66 @@ class DavTransportGuardTest {
     }
 
     @Test
-    fun `an https redirect to another host is followed with the account's credentials`() {
+    fun `a same-host http to https upgrade keeps the credentials on the account's host`() {
+        val plain = http()
+        val secure = https()
+        plain.enqueue(HostileDavServer.redirect(308, secure.at("/dav/").toString()))
+        secure.enqueue(MockResponse().setResponseCode(207))
+        accountClient(plain.url("/").toString(), allowCleartext = true)
+            .send(Request.Builder().url(plain.at("/")).method("PROPFIND", "<p/>".toRequestBody(xml)).build())
+            .use { assertTrue(it.request.url.isHttps) }
+        plain.next()
+        assertNotNull("the same host over TLS is still the account's own", secure.next().getHeader("Authorization"))
+    }
+
+    @Test
+    fun `an https redirect to another host is refused and nothing reaches it`() {
         val first = https()
         val second = https()
-        // "127.0.0.1" is another host to the client (the certificate names both). OkHttp's own
-        // follow-up would strip Authorization on a host change; the guard re-sends through the
-        // chain, so the auth interceptor adds it again (no domain scoping for https redirects).
+        // "127.0.0.1" is another host to the client (the certificate names both). Browsers
+        // never let a credentialed request cross origins on a redirect; neither does the
+        // guard, which would otherwise re-send the method and body with the account's
+        // headers to whatever host the server named.
         val otherHost = second.url("/partition/cal/").newBuilder().host("127.0.0.1").build()
         first.enqueue(HostileDavServer.redirect(307, otherHost.toString()))
-        second.enqueue(MockResponse().setResponseCode(207))
-        HostileDavServer.davClient(allowCleartext = false)
-            .send(Request.Builder().url(first.at("/cal/")).method("REPORT", "<r/>".toRequestBody(xml)).build())
+        try {
+            HostileDavServer.davClient(allowCleartext = false)
+                .send(Request.Builder().url(first.at("/cal/")).method("REPORT", "<r/>".toRequestBody(xml)).build())
+                .close()
+            fail("expected a refusal")
+        } catch (e: DavTransportRefusedException) {
+            assertEquals(DavTransportRefusal.CROSS_ORIGIN_REDIRECT, e.reason)
+            assertFalse("no path in the message", e.message!!.contains("partition"))
+        }
+        first.next()
+        assertEquals(0, second.requestCount)
+    }
+
+    @Test
+    fun `credentials attach only to the account's own https host`() {
+        val account = https()
+        val elsewhere = https()
+        elsewhere.enqueue(MockResponse().setResponseCode(207).setBody("<x/>"))
+        account.enqueue(MockResponse().setResponseCode(207).setBody("<x/>"))
+
+        val client = accountClient(account.url("/").toString())
+        client.send(Request.Builder().url(elsewhere.at("/cal/")).method("REPORT", "<r/>".toRequestBody(xml)).build()).close()
+        client.send(Request.Builder().url(account.at("/cal/")).method("REPORT", "<r/>".toRequestBody(xml)).build()).close()
+
+        assertNull("another https host gets no Authorization", elsewhere.next().getHeader("Authorization"))
+        assertNotNull("the account's host still does", account.next().getHeader("Authorization"))
+    }
+
+    @Test
+    fun `a same-origin https redirect is followed and keeps the credentials`() {
+        val account = https()
+        account.enqueue(HostileDavServer.redirect(307, "/moved/cal/"))
+        account.enqueue(MockResponse().setResponseCode(207).setBody("<x/>"))
+        accountClient(account.url("/").toString())
+            .send(Request.Builder().url(account.at("/cal/")).method("REPORT", "<r/>".toRequestBody(xml)).build())
             .use { assertEquals(207, it.code) }
-        assertNotNull(first.next().getHeader("Authorization"))
-        assertNotNull(second.next().getHeader("Authorization"))
+        account.next()
+        assertNotNull(account.next().getHeader("Authorization"))
     }
 
     // ---- what the caller sees ----
@@ -354,13 +431,67 @@ class DavTransportGuardTest {
             DavRedirectPolicy.next("https://dav.example.com:8443/".toHttpUrl(), 302, "http://dav.example.com:8443/dav/", "PROPFIND", false)
         )
         assertTrue(next(301, "http://other.example.com/") is DavRedirectPolicy.Decision.Refuse)
+        // Another origin — a different host, or the same host on another port — is refused,
+        // unless the origin rule allows it (a host the provider calls the same server).
+        val crossHost = next(307, "https://p01-dav.example.com/x")
+        assertTrue(crossHost is DavRedirectPolicy.Decision.Refuse)
+        assertEquals(
+            DavTransportRefusal.CROSS_ORIGIN_REDIRECT,
+            (crossHost as DavRedirectPolicy.Decision.Refuse).reason
+        )
+        assertTrue(next(302, "https://dav.example.com:8443/x") is DavRedirectPolicy.Decision.Refuse)
         assertEquals(
             DavRedirectPolicy.Decision.Follow("https://p01-dav.example.com/x".toHttpUrl()),
-            next(307, "https://p01-dav.example.com/x")
+            DavRedirectPolicy.next(https, 307, "https://p01-dav.example.com/x", "PUT", false) { true }
+        )
+
+        // A same-host http → https upgrade is followed whatever port the https side uses.
+        assertEquals(
+            DavRedirectPolicy.Decision.Follow("https://dav.example.com/dav/".toHttpUrl()),
+            DavRedirectPolicy.next("http://dav.example.com:8443/".toHttpUrl(), 302, "https://dav.example.com/dav/", "PROPFIND", true)
         )
         assertTrue(DavTransportGuard.allowsCleartext("http://nas.local:5232/"))
         assertTrue(DavTransportGuard.allowsCleartext(" HTTP://nas.local/"))
         assertFalse(DavTransportGuard.allowsCleartext("https://caldav.icloud.com"))
         assertFalse(DavTransportGuard.allowsCleartext(null))
+    }
+
+    @Test
+    fun `the account origin rule scopes credentials to the account's own origin`() {
+        val origin = DavTransportGuard.accountOriginRule("https://dav.example.com/") { accountHost, host ->
+            accountHost == "dav.example.com" && host == "p1.dav.example.com"
+        }
+        assertTrue(origin("https://dav.example.com/cal/".toHttpUrl()))
+        assertTrue("a host the provider calls the same server", origin("https://p1.dav.example.com/cal/".toHttpUrl()))
+        assertFalse("another port is another origin", origin("https://dav.example.com:8443/cal/".toHttpUrl()))
+        assertFalse("another scheme is another origin", origin("http://dav.example.com/cal/".toHttpUrl()))
+        assertFalse("another host", origin("https://evil.example.com/cal/".toHttpUrl()))
+        assertFalse(
+            "an account URL that doesn't parse fails closed",
+            DavTransportGuard.accountOriginRule("not a url")("https://dav.example.com/".toHttpUrl())
+        )
+
+        val httpAccount = DavTransportGuard.accountOriginRule("http://nas.local:5232/")
+        assertTrue(
+            "the same host over TLS after an upgrade is still the account's",
+            httpAccount("https://nas.local/dav.php/".toHttpUrl())
+        )
+        assertFalse("another host over TLS is not", httpAccount("https://evil.example.com/dav.php/".toHttpUrl()))
+
+        assertTrue(DavTransportGuard.mayAttachCredentials("https://dav.example.com/x".toHttpUrl(), false, origin))
+        assertFalse(DavTransportGuard.mayAttachCredentials("https://evil.example.com/x".toHttpUrl(), false, origin))
+        assertFalse(DavTransportGuard.mayAttachCredentials("http://dav.example.com/x".toHttpUrl(), false, origin))
+        assertFalse(
+            "an https account never downgrades to cleartext, even with the override",
+            DavTransportGuard.mayAttachCredentials("http://dav.example.com/x".toHttpUrl(), true, origin)
+        )
+        assertTrue(
+            "an http account's own host stays attachable over cleartext",
+            DavTransportGuard.mayAttachCredentials("http://nas.local:5232/dav.php/".toHttpUrl(), true, httpAccount)
+        )
+        assertFalse(
+            "cleartext stays on the account's own host",
+            DavTransportGuard.mayAttachCredentials("http://evil.example.com/x".toHttpUrl(), true, origin)
+        )
     }
 }

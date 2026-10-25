@@ -152,6 +152,7 @@ fun ContactDetailSheet(
         )
     ) {
         Surface(modifier = Modifier.fillMaxSize()) {
+            SyncDialogSystemBarAppearance()
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -332,7 +333,7 @@ private fun ContactDetailContent(
             SectionHeader(stringResource(R.string.contact_section_phones))
             detail.phones.forEach { phone ->
                 ActionRow(
-                    icon = { Icon(Icons.Default.Call, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    icon = { Icon(Icons.Default.Call, contentDescription = stringResource(R.string.contact_call), tint = MaterialTheme.colorScheme.primary) },
                     label = phone.number,
                     supporting = phone.typeLabel,
                     onClick = { onCall(phone.number) }
@@ -344,7 +345,7 @@ private fun ContactDetailContent(
             SectionHeader(stringResource(R.string.contact_section_emails))
             detail.emails.forEach { email ->
                 ActionRow(
-                    icon = { Icon(Icons.Default.Email, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    icon = { Icon(Icons.Default.Email, contentDescription = stringResource(R.string.contact_email), tint = MaterialTheme.colorScheme.primary) },
                     label = email.address,
                     supporting = email.typeLabel,
                     onClick = { onEmail(email.address) }
@@ -356,7 +357,7 @@ private fun ContactDetailContent(
             SectionHeader(stringResource(R.string.contact_section_addresses))
             detail.addresses.forEach { address ->
                 ActionRow(
-                    icon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    icon = { Icon(Icons.Default.LocationOn, contentDescription = stringResource(R.string.contact_map), tint = MaterialTheme.colorScheme.primary) },
                     label = address.formatted,
                     supporting = null,
                     onClick = { onMap(address.formatted) }

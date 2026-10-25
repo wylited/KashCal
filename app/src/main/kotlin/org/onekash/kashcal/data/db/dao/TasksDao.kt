@@ -140,7 +140,7 @@ interface TasksDao {
         WHERE tasks_fts MATCH :query
         AND calendars.is_visible = 1
         AND tasks.sync_status != 'PENDING_DELETE'
-        ORDER BY COALESCE(tasks.due_ts, tasks.dt_start_ts) ASC
+        AND tasks.status != 'CANCELLED'
         LIMIT 200
     """)
     suspend fun searchTasks(query: String): List<Task>

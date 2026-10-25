@@ -4,6 +4,7 @@ import org.onekash.kashcal.sync.client.model.CalendarMetadataProbe
 import org.onekash.kashcal.sync.parser.CalDavXmlParser
 import org.onekash.kashcal.sync.quirks.CalDavQuirks
 import org.onekash.kashcal.sync.quirks.matchesReservedCollection
+import org.onekash.kashcal.sync.quirks.pinServerHrefToOrigin
 import java.util.Calendar
 import java.util.TimeZone
 import javax.inject.Inject
@@ -97,7 +98,11 @@ class ICloudQuirks @Inject constructor() : CalDavQuirks {
 
     override fun buildEventUrl(href: String, calendarUrl: String): String {
         val url = if (href.startsWith("http")) {
-            href
+            pinServerHrefToOrigin(href, calendarUrl) { calendarHost, hrefHost ->
+                // iCloud serves one account from its canonical host and its numbered
+                // partitions alike: both are the same server.
+                ICloudUrlNormalizer.isCalDavHost(calendarHost) && ICloudUrlNormalizer.isCalDavHost(hrefHost)
+            }
         } else {
             // Extract base host from calendarUrl (e.g., "https://p180-caldav.icloud.com:443")
             val baseHost = if (calendarUrl.contains("://")) {

@@ -2,6 +2,7 @@ package org.onekash.kashcal.domain.task
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -31,9 +32,9 @@ import org.onekash.kashcal.widget.WidgetUpdateManager
 
 /**
  * Tests [TaskRepository]'s offline-first writes against mocked DAOs: the local-account
- * shortcut (SYNCED, no operation), the queued CREATE/UPDATE/DELETE/MOVE paths, the move's
- * read-only and cross-account refusals, the completion triple of
- * [TaskRepository.toggleDone], and the soft/hard delete split.
+ * shortcut (SYNCED, no operation), the queued CREATE/UPDATE/DELETE/MOVE paths, the
+ * read-only refusals of create, update and move (plus the move's cross-account refusal),
+ * the completion triple of [TaskRepository.toggleDone], and the soft/hard delete split.
  */
 class TaskRepositoryTest {
 
@@ -157,6 +158,27 @@ class TaskRepositoryTest {
         coVerify { widgetUpdateManager.updateAllWidgets() }
     }
 
+    /**
+     * The announcement must land after the mutation's transaction block has returned, not
+     * inside it: the expedited request can start a sync worker that reads a pre-commit WAL
+     * snapshot and no-ops if the queued operation isn't committed yet (the
+     * ticked-task-never-pushes race). The row write is the transaction's last observable
+     * step, so the sync request ordering after it is what pins the fix.
+     */
+    @Test
+    fun `update requests the expedited sync after the row write, following the commit`() = runTest {
+        coEvery { calendarsDao.getById(1L) } returns caldavCalendar
+        coEvery { tasksDao.getById(5L) } returns
+            task(caldavUrl = "https://caldav.example.com/user/tasks/a.ics")
+
+        repository.update(task(id = 5L).copy(summary = "Edited"))
+
+        coVerifyOrder {
+            tasksDao.update(any())
+            syncScheduler.requestExpeditedSync(forceFullSync = false)
+        }
+    }
+
     // ========== Create ==========
 
     @Test
@@ -201,6 +223,23 @@ class TaskRepositoryTest {
         coVerify {
             tasksDao.insert(match { it.localModifiedAt != 5L && it.localModifiedAt == it.updatedAt })
         }
+    }
+
+    /**
+     * Defense in depth behind the task form's picker: a queued CREATE for a read-only
+     * calendar never drains (its sync is pull-only) and expires into a row that presents
+     * as synced forever.
+     */
+    @Test
+    fun `create in a read-only calendar is rejected`() {
+        coEvery { calendarsDao.getById(1L) } returns caldavCalendar.copy(isReadOnly = true)
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repository.create(task(calendarId = 1L)) }
+        }
+        assertEquals("Cannot create a task in a read-only calendar", error.message)
+        coVerify(exactly = 0) { tasksDao.insert(any()) }
+        coVerify(exactly = 0) { pendingTaskOperationsDao.insert(any()) }
     }
 
     // ========== Update ==========
@@ -248,6 +287,39 @@ class TaskRepositoryTest {
         val saved = repository.update(task(id = 5L, calendarId = 3L).copy(summary = "Edited"))
 
         assertEquals(SyncStatus.SYNCED, saved.syncStatus)
+        coVerify(exactly = 0) { pendingTaskOperationsDao.insert(any()) }
+    }
+
+    @Test
+    fun `update of a task in a read-only calendar is rejected`() {
+        coEvery { calendarsDao.getById(1L) } returns caldavCalendar.copy(isReadOnly = true)
+        coEvery { tasksDao.getById(5L) } returns
+            task(caldavUrl = "https://caldav.example.com/user/tasks/a.ics")
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repository.update(task(id = 5L).copy(summary = "Edited")) }
+        }
+        assertEquals("Cannot update a task in a read-only calendar", error.message)
+        coVerify(exactly = 0) { tasksDao.update(any()) }
+        coVerify(exactly = 0) { pendingTaskOperationsDao.insert(any()) }
+    }
+
+    /**
+     * move()'s read-only refusal smuggled past as a calendarId change on an edit; the
+     * message matches move()'s so the form reports either path the same way.
+     */
+    @Test
+    fun `update moving a task into a read-only calendar is rejected`() {
+        coEvery { calendarsDao.getById(1L) } returns caldavCalendar
+        coEvery { calendarsDao.getById(9L) } returns otherCaldavCalendar.copy(isReadOnly = true)
+        coEvery { tasksDao.getById(5L) } returns
+            task(caldavUrl = "https://caldav.example.com/user/tasks/a.ics")
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repository.update(task(id = 5L, calendarId = 9L).copy(summary = "Edited")) }
+        }
+        assertEquals("Cannot move a task to a read-only calendar", error.message)
+        coVerify(exactly = 0) { tasksDao.update(any()) }
         coVerify(exactly = 0) { pendingTaskOperationsDao.insert(any()) }
     }
 
@@ -321,6 +393,7 @@ class TaskRepositoryTest {
     fun `delete of a synced task soft-deletes and queues DELETE with the target URL`() = runTest {
         coEvery { calendarsDao.getById(1L) } returns caldavCalendar
         val url = "https://caldav.example.com/user/tasks/a.ics"
+        coEvery { tasksDao.getById(5L) } returns task(caldavUrl = url)
 
         repository.delete(task(caldavUrl = url))
 
@@ -339,6 +412,7 @@ class TaskRepositoryTest {
     @Test
     fun `delete of a never-synced task is a hard delete`() = runTest {
         coEvery { calendarsDao.getById(1L) } returns caldavCalendar
+        coEvery { tasksDao.getById(5L) } returns task(caldavUrl = null)
 
         repository.delete(task(caldavUrl = null))
 
@@ -351,11 +425,39 @@ class TaskRepositoryTest {
     @Test
     fun `delete of a local-account task is a hard delete`() = runTest {
         coEvery { calendarsDao.getById(3L) } returns localCalendar
+        coEvery { tasksDao.getById(5L) } returns
+            task(calendarId = 3L, caldavUrl = "https://caldav.example.com/user/tasks/a.ics")
 
         repository.delete(task(calendarId = 3L, caldavUrl = "https://caldav.example.com/user/tasks/a.ics"))
 
         coVerify { pendingTaskOperationsDao.deleteForTask(5L) }
         coVerify { tasksDao.deleteById(5L) }
+    }
+
+    /**
+     * The stale-copy hazard: the caller holds the pre-push copy of a task created offline,
+     * whose background sync has since pushed the CREATE and stamped the stored row with a
+     * server URL. Branching on the argument would hard-delete a row the server now holds and
+     * orphan the resource; branching on the stored row queues the DELETE that reaps both.
+     */
+    @Test
+    fun `delete of a stale copy without a URL still queues DELETE when the stored row gained one`() = runTest {
+        coEvery { calendarsDao.getById(1L) } returns caldavCalendar
+        val url = "https://caldav.example.com/user/tasks/a.ics"
+        coEvery { tasksDao.getById(5L) } returns task(caldavUrl = url)
+
+        repository.delete(task(caldavUrl = null))
+
+        coVerify { tasksDao.markForDeletion(5L, any()) }
+        coVerify {
+            pendingTaskOperationsDao.insert(
+                match {
+                    it.taskId == 5L && it.operation == PendingTaskOperation.OPERATION_DELETE &&
+                        it.targetUrl == url
+                }
+            )
+        }
+        coVerify(exactly = 0) { tasksDao.deleteById(any()) }
     }
 
     // ========== Move ==========

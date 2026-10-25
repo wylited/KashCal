@@ -113,8 +113,9 @@ class EventCoordinator @Inject constructor(
      * Requests an expedited sync after a write to a synced calendar; a no-op when [isLocal].
      *
      * Enqueues and returns without waiting. [SyncScheduler.requestExpeditedSync] runs it as
-     * non-expedited work when the expedited quota is spent, waits for a network, and replaces a
-     * queued or running sync, so rapid consecutive edits share one.
+     * non-expedited work when the expedited quota is spent, waits for a network, and keeps a
+     * queued or running sync (KEEP), so rapid consecutive edits share one; a change made
+     * while a sync runs is pushed by the next scheduled sync.
      */
     private fun triggerImmediatePushIfNeeded(isLocal: Boolean) {
         if (!isLocal) {

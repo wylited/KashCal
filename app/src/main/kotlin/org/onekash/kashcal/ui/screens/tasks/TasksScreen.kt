@@ -153,6 +153,9 @@ fun TasksScreen(
         }
 
         if (groups.isEmpty()) {
+            // The chips show counts over the whole list, so a filter that hides everything must
+            // not claim there are no tasks at all.
+            val emptyText = if (tasks.isEmpty()) R.string.tasks_empty else R.string.tasks_no_matches
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -160,7 +163,7 @@ fun TasksScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    stringResource(R.string.tasks_empty),
+                    stringResource(emptyText),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }

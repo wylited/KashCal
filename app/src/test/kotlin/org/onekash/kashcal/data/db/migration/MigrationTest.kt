@@ -2268,7 +2268,7 @@ class MigrationTest {
         migrateUpToV26()
         seedV24Calendars()
         db.execSQL(
-            "INSERT INTO accounts (id, provider, email, created_at) VALUES (50, 'LOCAL', 'local@device', 0)"
+            "INSERT INTO accounts (id, provider, email, created_at) VALUES (50, 'local', 'local@device', 0)"
         )
         db.execSQL(
             "INSERT INTO calendars (id, account_id, caldav_url, display_name, color) " +

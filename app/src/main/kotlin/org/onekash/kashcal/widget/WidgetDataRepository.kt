@@ -11,6 +11,7 @@ import org.onekash.kashcal.domain.model.DisplayEvent
 import org.onekash.kashcal.domain.model.VisibilityDomain
 import org.onekash.kashcal.domain.reader.DisplayEventRepository
 import org.onekash.kashcal.domain.reader.TaskReader
+import org.onekash.kashcal.ui.components.taskReadsAsAllDay
 import org.onekash.kashcal.util.DateTimeUtils
 import java.time.LocalDate
 import javax.inject.Inject
@@ -147,7 +148,7 @@ class WidgetDataRepository @Inject constructor(
                 compareBy(
                     { it.whenTs == null },
                     { it.whenTs },
-                    { it.priority },
+                    { if (it.priority == 0) Int.MAX_VALUE else it.priority },
                     { it.title.lowercase() }
                 )
             )
@@ -170,7 +171,7 @@ class WidgetDataRepository @Inject constructor(
             .sortedWith(
                 compareBy(
                     { it.whenTs },
-                    { it.priority },
+                    { if (it.priority == 0) Int.MAX_VALUE else it.priority },
                     { it.title.lowercase() }
                 )
             )
@@ -180,7 +181,7 @@ class WidgetDataRepository @Inject constructor(
     /** Maps a [Task] to a [WidgetTask]; the day code follows the all-day flag, as events do. */
     private fun toWidgetTask(task: Task): WidgetTask {
         val whenTs = task.whenTs
-        val isAllDay = task.dueTs != null && task.dueIsAllDay
+        val isAllDay = taskReadsAsAllDay(task)
         return WidgetTask(
             taskId = task.id,
             title = task.summary,

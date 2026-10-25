@@ -29,9 +29,10 @@ import org.onekash.kashcal.sync.client.model.CalDavResult
 
 /**
  * Tests [TaskPushStrategy] against a mocked client and DAOs: per-operation outcomes
- * (create, update, delete, move), the CREATE/UPDATE 412 server-wins abandon, the DELETE 412
- * etag-refetch retry, the SEQUENCE bump on update, retry scheduling, the local-account move
- * edges, and the per-calendar operation filter (a MOVE also drains on its source calendar).
+ * (create, update, delete, move), the CREATE/UPDATE 412 server-wins abandon, the MOVE 412
+ * target-copy adoption, the DELETE 412 etag-refetch retry, the SEQUENCE bump on update,
+ * retry scheduling, the local-account move edges, and the per-calendar operation filter (a
+ * MOVE also drains on its source calendar).
  */
 class TaskPushStrategyTest {
 
@@ -432,23 +433,40 @@ class TaskPushStrategyTest {
     }
 
     @Test
-    fun `move create conflict abandons the op server-wins`() = runTest {
+    fun `move create 412 adopts the existing target copy and finishes the move`() = runTest {
+        val sourceUrl = "https://caldav.example.com/user/tasks/task-uid.ics"
+        val targetUrl = "https://caldav.example.com/user/other/task-uid@example.com.ics"
         ready(
             operation(
                 operation = PendingTaskOperation.OPERATION_MOVE,
+                targetUrl = sourceUrl,
                 targetCalendarId = 9L
             )
         )
-        coEvery { tasksDao.getByIds(any()) } returns listOf(task())
+        coEvery { tasksDao.getByIds(any()) } returns listOf(task(caldavUrl = sourceUrl, etag = "\"e1\""))
         coEvery { calendarRepository.getCalendarById(9L) } returns targetCalendar
-        coEvery { client.createEvent(any(), any(), any()) } returns CalDavResult.conflictError("Conflict")
+        // A retry after a partial first attempt: the target copy already exists, so the
+        // If-None-Match PUT 412s.
+        coEvery { client.createEvent(targetCalendar.caldavUrl, "task-uid@example.com", any()) } returns
+            CalDavResult.conflictError("Precondition failed")
+        coEvery { client.fetchEtag(targetUrl) } returns CalDavResult.success("\"e2\"")
+        coEvery { client.deleteEvent(sourceUrl, "\"e1\"") } returns CalDavResult.success(Unit)
 
         // The op names its target, so the target calendar's run drains it.
         val result = strategy.pushForCalendar(targetCalendar, client)
 
-        assertEquals(1, result.failed)
-        coVerify { pendingTaskOperationsDao.markAbandoned(105L, any(), any()) }
-        coVerify { tasksDao.markSynced(5L, null, any()) }
+        // The existing copy is adopted (fetched etag, client-built URL) and the source delete
+        // completes the move instead of abandoning and stranding the copy as a duplicate.
+        assertEquals(1, result.created)
+        assertEquals(1, result.deleted)
+        assertEquals(0, result.failed)
+        coVerify { client.fetchEtag(targetUrl) }
+        coVerify {
+            tasksDao.markCreatedOnServerWithCopy(5L, targetUrl, "\"e2\"", any(), any())
+        }
+        coVerify { pendingTaskOperationsDao.deleteById(105L) }
+        coVerify(exactly = 0) { pendingTaskOperationsDao.markAbandoned(any(), any(), any()) }
+        coVerify(exactly = 0) { tasksDao.markSynced(any(), any(), any()) }
     }
 
     @Test
@@ -467,8 +485,10 @@ class TaskPushStrategyTest {
             listOf(task(calendarId = 9L, caldavUrl = sourceUrl, etag = "\"e1\""))
         coEvery { calendarRepository.getCalendarById(9L) } returns targetCalendar
         coEvery { calendarRepository.getCalendarById(1L) } returns calendar
+        // 409 is a first-attempt conflict (no copy to adopt, unlike a 412), so the op is
+        // abandoned server-wins and the row is re-parked on the source calendar.
         coEvery { client.createEvent(targetCalendar.caldavUrl, any(), any()) } returns
-            CalDavResult.conflictError("Conflict")
+            CalDavResult.error(409, "Conflict")
 
         // The op names its target, so the target calendar's run drains it.
         val result = strategy.pushForCalendar(targetCalendar, client)
@@ -603,6 +623,115 @@ class TaskPushStrategyTest {
                 5L, "https://caldav.example.com/user/other/task-uid.ics", "\"e2\"", any(), any()
             )
         }
+    }
+
+    @Test
+    fun `update pushes the stored body patched, keeping unmodeled properties and cohabitants`() = runTest {
+        val url = "https://caldav.example.com/user/tasks/task-uid.ics"
+        val rawIcal = listOf(
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Other//Client//EN",
+            "BEGIN:VEVENT",
+            "UID:event-1@example.com",
+            "DTSTAMP:20260101T000000Z",
+            "DTSTART:20260601T120000Z",
+            "DTEND:20260601T130000Z",
+            "SUMMARY:Cohabiting event",
+            "END:VEVENT",
+            "BEGIN:VTODO",
+            "UID:task-uid@example.com",
+            "DTSTAMP:20260101T000000Z",
+            "SUMMARY:Test Task",
+            "STATUS:NEEDS-ACTION",
+            "CATEGORIES:work",
+            "ATTENDEE;CN=Alice:mailto:alice@example.com",
+            "BEGIN:VALARM",
+            "ACTION:DISPLAY",
+            "TRIGGER:-PT30M",
+            "END:VALARM",
+            "END:VTODO",
+            "END:VCALENDAR"
+        ).joinToString("\r\n")
+        ready(operation(operation = PendingTaskOperation.OPERATION_UPDATE))
+        coEvery { tasksDao.getByIds(any()) } returns listOf(
+            task(caldavUrl = url, etag = "\"e1\"")
+                .copy(rawIcal = rawIcal, summary = "Edited locally")
+        )
+        val body = slot<String>()
+        coEvery { client.updateEvent(url, capture(body), "\"e1\"") } returns
+            CalDavResult.success("\"e2\"")
+
+        val result = strategy.pushForCalendar(calendar, client)
+
+        assertEquals(1, result.updated)
+        // The edit landed...
+        assertTrue(body.captured.contains("SUMMARY:Edited locally"))
+        assertTrue(!body.captured.contains("SUMMARY:Test Task"))
+        // ...and the PUT body still carries everything else the resource holds.
+        assertTrue(body.captured.contains("BEGIN:VEVENT"))
+        assertTrue(body.captured.contains("SUMMARY:Cohabiting event"))
+        assertTrue(body.captured.contains("CATEGORIES:work"))
+        assertTrue(body.captured.contains("ATTENDEE;CN=Alice:mailto:alice@example.com"))
+        assertTrue(body.captured.contains("BEGIN:VALARM"))
+        assertTrue(body.captured.contains("TRIGGER:-PT30M"))
+        // The stored body the write sent becomes the next merge base.
+        coVerify { tasksDao.markSyncedWithCopy(5L, "\"e2\"", body.captured, any()) }
+    }
+
+    @Test
+    fun `move adopt 404 falls through to a plain re-PUT and finishes the move`() = runTest {
+        val sourceUrl = "https://caldav.example.com/user/tasks/task-uid@example.com.ics"
+        val targetUrl = "https://caldav.example.com/user/other/task-uid@example.com.ics"
+        ready(
+            operation(
+                operation = PendingTaskOperation.OPERATION_MOVE,
+                targetUrl = sourceUrl,
+                targetCalendarId = 9L
+            )
+        )
+        coEvery { tasksDao.getByIds(any()) } returns listOf(task(caldavUrl = sourceUrl, etag = "\"e1\""))
+        coEvery { calendarRepository.getCalendarById(9L) } returns targetCalendar
+        // First PUT 412s as after a partial attempt, but the copy the etag fetch would adopt
+        // is gone again by the time the PROPFIND runs — previously a permanent failure.
+        coEvery { client.createEvent(targetCalendar.caldavUrl, "task-uid@example.com", any()) } returnsMany listOf(
+            CalDavResult.conflictError("Precondition failed"),
+            CalDavResult.success(Pair(targetUrl, "\"e9\""))
+        )
+        coEvery { client.fetchEtag(targetUrl) } returns CalDavResult.notFoundError("Not Found")
+        coEvery { client.deleteEvent(sourceUrl, "\"e1\"") } returns CalDavResult.success(Unit)
+
+        val result = strategy.pushForCalendar(targetCalendar, client)
+
+        assertEquals(1, result.created)
+        assertEquals(1, result.deleted)
+        assertEquals(0, result.failed)
+        coVerify(exactly = 2) { client.createEvent(any(), any(), any()) }
+        coVerify { client.deleteEvent(sourceUrl, "\"e1\"") }
+        coVerify { tasksDao.markCreatedOnServerWithCopy(5L, targetUrl, "\"e9\"", any(), any()) }
+        coVerify { pendingTaskOperationsDao.deleteById(105L) }
+        coVerify(exactly = 0) { pendingTaskOperationsDao.markFailed(any(), any(), any()) }
+    }
+
+    @Test
+    fun `push warnings carry no task summary, URL or etag`() = runTest {
+        ready(operation())
+        coEvery { tasksDao.getByIds(any()) } returns listOf(
+            task(
+                caldavUrl = "https://caldav.example.com/user/tasks/task-uid.ics",
+                etag = "\"secret-etag\""
+            )
+        )
+        coEvery { client.createEvent(any(), any(), any()) } returns
+            CalDavResult.error(500, "boom", isRetryable = true)
+
+        val result = strategy.pushForCalendar(calendar, client)
+
+        val warning = result.warnings.single()
+        assertTrue(warning.contains("task-uid.ics"))
+        assertTrue(!warning.contains("Test Task"))
+        assertTrue(!warning.contains("https://"))
+        assertTrue(!warning.contains("secret-etag"))
     }
 
     // ========== Calendar filter ==========

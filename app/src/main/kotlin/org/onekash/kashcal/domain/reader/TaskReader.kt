@@ -1,7 +1,9 @@
 package org.onekash.kashcal.domain.reader
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import org.onekash.kashcal.data.db.KashCalDatabase
+import org.onekash.kashcal.data.db.entity.SyncStatus
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.VisibilityDomain
 import javax.inject.Inject
@@ -69,4 +71,13 @@ class TaskReader @Inject constructor(
 
     /** Returns the task with [id], or null. */
     suspend fun getTaskById(id: Long): Task? = tasksDao.getById(id)
+
+    /**
+     * Observes the task with [id] whatever its calendar's visibility, mapping a PENDING_DELETE
+     * row to null as the list queries drop soft-deleted rows, so the quick-view sheet closes on
+     * delete at once and a schedule-domain tap (week-grid chip, search result) keeps rendering
+     * when the task's calendar is agenda-hidden.
+     */
+    fun observeTaskById(id: Long): Flow<Task?> =
+        tasksDao.observeById(id).map { it?.takeIf { task -> task.syncStatus != SyncStatus.PENDING_DELETE } }
 }

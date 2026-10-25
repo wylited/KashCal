@@ -194,4 +194,21 @@ class TasksDaoTest {
 
         assertEquals(listOf("Mine"), loaded.map { it.summary })
     }
+
+    @Test
+    fun `searchTasks drops cancelled rows`() = runTest {
+        tasksDao.insert(task(scheduleOnlyCalendarId, uid = "open", summary = "buy milk"))
+        tasksDao.insert(
+            task(
+                scheduleOnlyCalendarId,
+                uid = "cancelled",
+                summary = "buy milk",
+                status = Task.STATUS_CANCELLED
+            )
+        )
+
+        val results = tasksDao.searchTasks("milk*")
+
+        assertEquals(listOf("open"), results.map { it.uid })
+    }
 }

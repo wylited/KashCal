@@ -68,7 +68,7 @@ class LocalCalendarInitializer @Inject constructor(
                         isVisible = true,
                         isDefault = true,
                         isReadOnly = false,
-                        sortOrder = 0 // Local calendar appears first
+                        components = Calendar.COMPONENTS_VEVENT_VTODO,
                     )
                 )
                 calendarId

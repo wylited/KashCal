@@ -342,6 +342,13 @@ class SyncScheduler @Inject constructor(
      * Requests an expedited full sync, which EventCoordinator issues after a local change to
      * a synced calendar. Expedited work has quotas; past the quota it runs as regular work.
      *
+     * KEEP, not REPLACE. A pending (queued or running) sync is kept and the new request is
+     * dropped; rapid consecutive edits still share one sync. REPLACE cancelled a running
+     * worker mid-push, after it had marked a task operation IN_PROGRESS: the replacement
+     * only selects PENDING operations and the stale recovery waits an hour, so the
+     * cancelled operation was stranded until then. The price is that a change made while a
+     * sync runs waits for the periodic schedule or the next edit's request.
+     *
      * @param forceFullSync if true, ignores ctag and sync-token
      * @return the work request's id
      */
@@ -360,7 +367,7 @@ class SyncScheduler @Inject constructor(
 
         workManager.enqueueUniqueWork(
             EXPEDITED_SYNC_WORK,
-            ExistingWorkPolicy.REPLACE,
+            ExistingWorkPolicy.KEEP,
             expeditedWork
         )
 

@@ -105,8 +105,9 @@ internal fun buildAgendaListModel(
             if (includeCompletedTasks && placementDay >= todayDayCode) {
                 completedTasksByDay.getOrPut(placementDay) { mutableListOf() }.add(task)
             }
-        } else {
-            // Overdue folds into today, matching the Agenda widget's task list.
+        } else if (task.isOpen) {
+            // Overdue folds into today, matching the Agenda widget's task list. CANCELLED is
+            // neither done nor open and drops, as TasksListModel's source query excludes it.
             val renderDay = if (placementDay < todayDayCode) todayDayCode else placementDay
             openTasksByDay.getOrPut(renderDay) { mutableListOf() }.add(task)
         }

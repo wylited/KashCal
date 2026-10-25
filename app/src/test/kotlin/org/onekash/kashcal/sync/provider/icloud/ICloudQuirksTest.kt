@@ -540,6 +540,33 @@ END:VCALENDAR</calendar-data>
         assertEquals("https://caldav.icloud.com/123/calendars/work/event.ics", url)
     }
 
+    @Test
+    fun `build event url keeps an absolute canonical href verbatim`() {
+        val url = quirks.buildEventUrl(
+            "https://caldav.icloud.com/123/calendars/work/event.ics",
+            "https://caldav.icloud.com/123/calendars/work/"
+        )
+        assertEquals("https://caldav.icloud.com/123/calendars/work/event.ics", url)
+    }
+
+    @Test
+    fun `build event url normalizes an absolute partition href to the canonical host`() {
+        val url = quirks.buildEventUrl(
+            "https://p42-caldav.icloud.com/123/calendars/work/event.ics",
+            "https://caldav.icloud.com/123/calendars/work/"
+        )
+        assertEquals("https://caldav.icloud.com/123/calendars/work/event.ics", url)
+    }
+
+    @Test
+    fun `build event url rewrites a cross-origin absolute href to the calendar origin`() {
+        val url = quirks.buildEventUrl(
+            "https://evil.example.com/steal/event.ics",
+            "https://caldav.icloud.com/123/calendars/work/"
+        )
+        assertEquals("https://caldav.icloud.com/steal/event.ics", url)
+    }
+
     // Date formatting tests
 
     @Test

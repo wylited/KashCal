@@ -15,6 +15,7 @@ import org.onekash.kashcal.data.db.KashCalDatabase
 import org.onekash.kashcal.data.db.entity.Account
 import org.onekash.kashcal.data.db.entity.Calendar
 import org.onekash.kashcal.data.db.entity.PendingTaskOperation
+import org.onekash.kashcal.data.db.entity.SyncStatus
 import org.onekash.kashcal.data.db.entity.Task
 import org.onekash.kashcal.domain.model.AccountProvider
 import org.robolectric.RobolectricTestRunner
@@ -27,7 +28,9 @@ import java.util.concurrent.TimeUnit
  *
  * - Crash recovery of stale IN_PROGRESS operations ([PendingTaskOperationsDao.resetStaleInProgress])
  * - The forced-sync reset of FAILED operations ([PendingTaskOperationsDao.resetAllFailed])
- * - The 30-day expiry deletion, including the tombstoned task an expired DELETE leaves
+ * - The 24-hour auto-reset of FAILED operations ([PendingTaskOperationsDao.autoResetOldFailed])
+ * - The 30-day expiry deletion: tombstones, revival of rows that reached the server in any
+ *   status, and hard deletion of rows that never did
  *   ([PendingTaskOperationsDao.deleteExpired])
  */
 @RunWith(RobolectricTestRunner::class)
@@ -195,17 +198,52 @@ class PendingTaskOperationsDaoTest {
         )
     }
 
+    // ==================== 24-hour Auto-Reset Tests ====================
+
+    @Test
+    fun `autoResetOldFailed returns day-old failed operations to a fresh PENDING state`() = runTest {
+        val now = System.currentTimeMillis()
+        val dayOldId = pendingTaskOpsDao.insert(createOperation())
+        val freshId = pendingTaskOpsDao.insert(createOperation())
+        val abandonedId = pendingTaskOpsDao.insert(
+            createOperation(status = PendingTaskOperation.STATUS_ABANDONED)
+        )
+        pendingTaskOpsDao.markFailed(dayOldId, "Boom", now - TimeUnit.HOURS.toMillis(25))
+        pendingTaskOpsDao.markFailed(freshId, "Boom", now - TimeUnit.HOURS.toMillis(2))
+
+        val resetCount = pendingTaskOpsDao.autoResetOldFailed(
+            failedBefore = now - TimeUnit.HOURS.toMillis(24),
+            now = now
+        )
+
+        assertEquals(1, resetCount)
+        val dayOld = pendingTaskOpsDao.getById(dayOldId)
+        assertEquals(PendingTaskOperation.STATUS_PENDING, dayOld?.status)
+        assertEquals(0, dayOld?.retryCount)
+        assertEquals(0L, dayOld?.nextRetryAt)
+        assertNull(dayOld?.lastError)
+        // A failure younger than a day keeps waiting for a forced sync.
+        assertEquals(PendingTaskOperation.STATUS_FAILED, pendingTaskOpsDao.getById(freshId)?.status)
+        // ABANDONED is a 412 server-wins resolution the pull owns: never re-armed.
+        assertEquals(
+            PendingTaskOperation.STATUS_ABANDONED,
+            pendingTaskOpsDao.getById(abandonedId)?.status
+        )
+    }
+
     // ==================== Expiry Deletion Tests ====================
 
     /** Inserts an operation already past the 30-day lifetime, so deleteExpired finds it. */
     private suspend fun insertExpiredOperation(
         operation: String = PendingTaskOperation.OPERATION_CREATE,
-        taskId: Long = testTaskId
+        taskId: Long = testTaskId,
+        status: String = PendingTaskOperation.STATUS_PENDING
     ): Long {
         return pendingTaskOpsDao.insert(
             createOperation(
                 taskId = taskId,
                 operation = operation,
+                status = status,
                 createdAt = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(31)
             )
         )
@@ -258,15 +296,73 @@ class PendingTaskOperationsDaoTest {
     }
 
     @Test
-    fun `deleteExpired keeps the task row of an expired CREATE operation`() = runTest {
-        // Expiry discards the operation, never a task with content: the pull keeps such a row
-        // fresh, and a never-synced row stays visible to its owner.
-        val now = System.currentTimeMillis()
-        insertExpiredOperation(operation = PendingTaskOperation.OPERATION_CREATE)
+    fun `deleteExpired revives the task of an expired CREATE that reached the server`() = runTest {
+        // A row with a caldav_url has a server copy: expiry returns it to SYNCED with a NULL
+        // etag so the pull fetches the resource afresh.
+        val taskId = tasksDao.insert(
+            Task(
+                uid = "reached-server-uid",
+                calendarId = testCalendarId,
+                summary = "Reached Server",
+                status = Task.STATUS_NEEDS_ACTION,
+                dtstamp = System.currentTimeMillis(),
+                caldavUrl = "https://caldav.example.com/home/task.ics",
+                etag = "\"v1\"",
+                syncStatus = SyncStatus.PENDING_CREATE
+            )
+        )
+        insertExpiredOperation(taskId = taskId)
 
-        val deletedCount = pendingTaskOpsDao.deleteExpired(cutoff = now - TimeUnit.DAYS.toMillis(30))
+        val deletedCount = pendingTaskOpsDao.deleteExpired(cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30))
 
         assertEquals(1, deletedCount)
-        assertNotNull(tasksDao.getById(testTaskId))
+        val revived = tasksDao.getById(taskId)
+        assertNotNull(revived)
+        assertEquals(SyncStatus.SYNCED, revived?.syncStatus)
+        assertNull(revived?.etag)
+    }
+
+    @Test
+    fun `deleteExpired revives the task of an expired IN_PROGRESS operation`() = runTest {
+        // Overlapping syncs can leave an expired operation IN_PROGRESS; its row must be
+        // revived like any other, or dropping the operation strands it between push and pull.
+        val taskId = tasksDao.insert(
+            Task(
+                uid = "in-progress-uid",
+                calendarId = testCalendarId,
+                summary = "In Progress",
+                status = Task.STATUS_NEEDS_ACTION,
+                dtstamp = System.currentTimeMillis(),
+                caldavUrl = "https://caldav.example.com/home/inprogress.ics",
+                etag = "\"v1\"",
+                syncStatus = SyncStatus.PENDING_UPDATE
+            )
+        )
+        insertExpiredOperation(
+            operation = PendingTaskOperation.OPERATION_UPDATE,
+            taskId = taskId,
+            status = PendingTaskOperation.STATUS_IN_PROGRESS
+        )
+
+        val deletedCount = pendingTaskOpsDao.deleteExpired(cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30))
+
+        assertEquals(1, deletedCount)
+        val revived = tasksDao.getById(taskId)
+        assertNotNull(revived)
+        assertEquals(SyncStatus.SYNCED, revived?.syncStatus)
+        assertNull(revived?.etag)
+    }
+
+    @Test
+    fun `deleteExpired hard-deletes the task of an expired CREATE that never reached the server`() = runTest {
+        // caldav_url NULL: the PUT never landed, so there is no server copy for the pull to
+        // re-ingest. Reviving the row to SYNCED would park a label that lies forever; the
+        // row goes with its operation instead.
+        insertExpiredOperation() // CREATE on testTaskId, whose caldav_url is NULL
+
+        val deletedCount = pendingTaskOpsDao.deleteExpired(cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30))
+
+        assertEquals(1, deletedCount)
+        assertNull(tasksDao.getById(testTaskId))
     }
 }

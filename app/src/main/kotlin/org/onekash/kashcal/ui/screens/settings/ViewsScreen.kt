@@ -56,6 +56,7 @@ import org.onekash.kashcal.data.preferences.KashCalDataStore
 import org.onekash.kashcal.ui.components.SettingsTopAppBar
 import org.onekash.kashcal.ui.components.viewModeLabel
 import org.onekash.kashcal.ui.viewmodels.ViewMode
+import org.onekash.kashcal.widget.WidgetUpdateManager
 import javax.inject.Inject
 import kotlin.math.abs
 
@@ -67,7 +68,7 @@ enum class ViewOptionKey(@StringRes val labelRes: Int) {
     /** Week and Planner drop Saturday and Sunday. */
     HIDE_WEEKENDS(R.string.view_opt_hide_weekends),
 
-    /** Month, Month (Full) and Agenda carry a week-number column or caption. Writes the shared
+    /** Month and Month (Full) carry a week-number column or caption. Writes the shared
      *  week-numbers preference (the Display settings' "Show week numbers"), not a per-view key. */
     WEEK_NUMBERS(R.string.view_opt_week_numbers),
 
@@ -81,7 +82,7 @@ enum class ViewOptionKey(@StringRes val labelRes: Int) {
 /** The views each [ViewOptionKey] applies to; a view's sheet lists only its own options. */
 private val VIEW_OPTION_APPLICABILITY: Map<ViewOptionKey, Set<ViewMode>> = mapOf(
     ViewOptionKey.HIDE_WEEKENDS to setOf(ViewMode.WEEK, ViewMode.PLANNER),
-    ViewOptionKey.WEEK_NUMBERS to setOf(ViewMode.MONTH, ViewMode.MONTH_FULL, ViewMode.AGENDA),
+    ViewOptionKey.WEEK_NUMBERS to setOf(ViewMode.MONTH, ViewMode.MONTH_FULL),
     ViewOptionKey.AGENDA_COMPLETED_TASKS to setOf(ViewMode.AGENDA),
     ViewOptionKey.MONTH_TASK_BADGE to setOf(ViewMode.MONTH, ViewMode.MONTH_FULL),
 )
@@ -137,7 +138,8 @@ data class ViewsSettingsState(
  */
 @HiltViewModel
 class ViewsScreenViewModel @Inject constructor(
-    private val dataStore: KashCalDataStore
+    private val dataStore: KashCalDataStore,
+    private val widgetUpdateManager: WidgetUpdateManager
 ) : ViewModel() {
 
     val state: StateFlow<ViewsSettingsState> = combine(
@@ -184,13 +186,19 @@ class ViewsScreenViewModel @Inject constructor(
 
     /** Writes one per-view option; the consuming views follow their own preference reads.
      *  WEEK_NUMBERS is the exception: it writes the shared week-numbers preference
-     *  ([KashCalDataStore.setShowWeekNumbers]), which the Month, Month (Full) and Agenda views —
-     *  and the month widget — already read, so the option surfaces that one behavior per view. */
+     *  ([KashCalDataStore.setShowWeekNumbers]), which the Month and Month (Full) views — and
+     *  the month widget — read, so the write also refreshes the widgets (the widget re-reads
+     *  the preference only on an update). */
     fun setViewOption(key: ViewOptionKey, value: Boolean) {
         viewModelScope.launch {
             when (key) {
                 ViewOptionKey.HIDE_WEEKENDS -> dataStore.setViewOptHideWeekends(value)
-                ViewOptionKey.WEEK_NUMBERS -> dataStore.setShowWeekNumbers(value)
+                ViewOptionKey.WEEK_NUMBERS -> {
+                    dataStore.setShowWeekNumbers(value)
+                    // The month widget's week-number gutter re-reads this preference only on a
+                    // refresh; mirror the Display settings and update the widgets now.
+                    widgetUpdateManager.updateAllWidgets("week_numbers_changed")
+                }
                 ViewOptionKey.AGENDA_COMPLETED_TASKS -> dataStore.setViewOptAgendaCompletedTasks(value)
                 ViewOptionKey.MONTH_TASK_BADGE -> dataStore.setViewOptMonthTaskBadge(value)
             }
@@ -402,7 +410,7 @@ private fun ReorderableViewsList(
  * One view's options sheet: a toggle per [ViewOptionKey] that applies to the view, in the
  * enum's order. Values and writes go through the shared per-view preferences, so the sheet and
  * the consuming views can't disagree — except [ViewOptionKey.WEEK_NUMBERS], which reads and
- * writes the app-wide week-numbers preference the Month, Month (Full) and Agenda grids consume.
+ * writes the app-wide week-numbers preference the Month and Month (Full) grids consume.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

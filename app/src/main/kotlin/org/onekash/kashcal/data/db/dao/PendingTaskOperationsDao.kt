@@ -129,6 +129,29 @@ interface PendingTaskOperationsDao {
     suspend fun resetAllFailed(now: Long): Int
 
     /**
+     * Returns FAILED operations that failed before [failedBefore] (the caller passes 24
+     * hours ago) to PENDING with a fresh retry count, and returns how many — the task
+     * counterpart of [PendingOperationsDao.autoResetOldFailed], so a task operation that
+     * burned its retries doesn't sit dead until a manual forced full sync.
+     *
+     * Measures from `updated_at`: the task queue has no `failed_at` column, and nothing
+     * but [markFailed] touches a FAILED operation, so `updated_at` is when it failed. Nor
+     * is there a lifetime guard to spare — the caller runs [deleteExpired] first, which
+     * drops everything past the 30-day lifetime whatever its status.
+     */
+    @Query("""
+        UPDATE pending_task_operations
+        SET status = 'PENDING',
+            retry_count = 0,
+            next_retry_at = 0,
+            last_error = NULL,
+            updated_at = :now
+        WHERE status = 'FAILED'
+        AND updated_at < :failedBefore
+    """)
+    suspend fun autoResetOldFailed(failedBefore: Long, now: Long): Int
+
+    /**
      * Deletes every operation queued before [cutoff] (the caller passes now minus
      * [RetryDelays.OPERATION_LIFETIME_MS]), with the task rows an expired DELETE had
      * soft-deleted, and returns how many operations went.
@@ -137,12 +160,67 @@ interface PendingTaskOperationsDao {
      * parks them ABANDONED for [PendingOperationsDao.resetAllFailed] to re-arm: a task row
      * soft-deleted with its DELETE would otherwise linger forever, since the pull skips
      * tombstones and only a DELETE's push reaps them.
+     *
+     * The same stranded-row trap awaits an expired CREATE, UPDATE or MOVE: the push only
+     * drains rows through an operation, and the pull skips rows whose `sync_status` still
+     * says PENDING, so dropping the operation alone would leave the row stuck between the
+     * two forever. Rows whose `caldav_url` is set — the change reached the server at least
+     * once — return to SYNCED with a NULL etag through [reviveExpiredNonDeleteTasks], so
+     * the pull re-ingests the server copy. Rows without a URL never reached the server at
+     * all: the pull cannot re-ingest what it never saw, so
+     * [deleteExpiredUnreachedTasks] hard-deletes them instead of parking them in a SYNCED
+     * that would lie about a server copy that doesn't exist. PENDING_DELETE rows keep the
+     * tombstone reaping above.
      */
     @Transaction
     suspend fun deleteExpired(cutoff: Long): Int {
         deleteExpiredTombstonedTasks(cutoff)
+        deleteExpiredUnreachedTasks(cutoff)
+        reviveExpiredNonDeleteTasks(cutoff)
         return deleteExpiredOperations(cutoff)
     }
+
+    /**
+     * Returns the tasks of expired non-DELETE operations that reached the server
+     * (`caldav_url` set) to its version: SYNCED with a NULL etag makes the pull fetch the
+     * resource afresh.
+     *
+     * The operation predicate mirrors [deleteExpiredOperations] exactly (`created_at <
+     * cutoff`, any status), so no row is revived twice or left with a dropped operation.
+     * Any status includes IN_PROGRESS, which belongs to an overlapping sync: dropping the
+     * operation without reviving the row would strand it between push and pull. ABANDONED
+     * is covered too, and harmlessly — a 412 server-wins row revival just makes the pull
+     * re-fetch the server copy it already owns.
+     */
+    @Query("""
+        UPDATE tasks
+        SET sync_status = 'SYNCED',
+            etag = NULL
+        WHERE caldav_url IS NOT NULL
+        AND id IN (
+            SELECT task_id FROM pending_task_operations
+            WHERE operation != 'DELETE'
+            AND created_at < :cutoff
+        )
+    """)
+    suspend fun reviveExpiredNonDeleteTasks(cutoff: Long): Int
+
+    /**
+     * Hard-deletes the tasks of expired non-DELETE operations whose rows never reached the
+     * server (`caldav_url` NULL, so the push's PUT never landed). There is no server copy
+     * for the pull to re-ingest, so revival to SYNCED would strand a row that claims a
+     * server copy it doesn't have; the local row goes with its operation instead.
+     */
+    @Query("""
+        DELETE FROM tasks
+        WHERE caldav_url IS NULL
+        AND id IN (
+            SELECT task_id FROM pending_task_operations
+            WHERE operation != 'DELETE'
+            AND created_at < :cutoff
+        )
+    """)
+    suspend fun deleteExpiredUnreachedTasks(cutoff: Long): Int
 
     /** Deletes the tombstoned (PENDING_DELETE) tasks whose DELETE operations expired. */
     @Query("""

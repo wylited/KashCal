@@ -90,20 +90,25 @@ class OkHttpCardDavClientFactory @Inject constructor() : CardDavClientFactory {
         // Plain http only for an account the user set up with http://; everything
         // else is refused before it is sent, and Basic/Digest never go over it.
         val allowCleartext = DavTransportGuard.allowsCleartext(credentials.serverUrl)
+        // Everything that carries the account's identity — cleartext, redirects, the Basic
+        // header and a Digest answer — stays on the account's own origin (scheme, host,
+        // port), so a poisoned stored URL or a cross-origin redirect can never ship it
+        // off-origin.
+        val isAccountOrigin = DavTransportGuard.accountOriginRule(credentials.serverUrl)
         val clientBuilder = baseHttpClient.newBuilder()
             // Follow redirects ourselves with the same method and body (OkHttp would
             // turn a redirected PUT or DELETE into a GET that looks like a success).
-            .installDavTransport(allowCleartext)
+            .installDavTransport(allowCleartext, isAccountOrigin)
             // Answers a 401 Digest challenge (RFC 2617/7616) to the preemptive Basic
             // header; OkHttp then retries with the Digest credentials.
-            .authenticator(DigestAuthenticator(credentials.username, credentials.password, allowCleartext))
+            .authenticator(DigestAuthenticator(credentials.username, credentials.password, allowCleartext, isAccountOrigin))
             .addNetworkInterceptor { chain ->
                 val requestBuilder = chain.request().newBuilder()
 
                 // Preemptive Basic, but never over an Authorization header already set
                 // (e.g. the Digest header of a 401 retry): that would loop on 401 forever.
                 if (chain.request().header("Authorization") == null &&
-                    DavTransportGuard.mayAttachCredentials(chain.request().url, allowCleartext)
+                    DavTransportGuard.mayAttachCredentials(chain.request().url, allowCleartext, isAccountOrigin)
                 ) {
                     requestBuilder.header(
                         "Authorization",

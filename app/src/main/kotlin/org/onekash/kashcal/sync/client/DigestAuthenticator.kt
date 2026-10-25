@@ -2,6 +2,7 @@ package org.onekash.kashcal.sync.client
 
 import android.util.Log
 import okhttp3.Authenticator
+import okhttp3.HttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.Route
@@ -28,7 +29,14 @@ class DigestAuthenticator(
      * was set up with an http:// address. A Digest response is derived from the password, so
      * it is never sent over cleartext for an https account.
      */
-    private val allowCleartext: Boolean
+    private val allowCleartext: Boolean,
+    /**
+     * Which URLs still belong to the account this authenticator speaks for (scheme, host,
+     * port): a 401 challenge from any other origin is left unanswered, so a poisoned
+     * stored URL on another host cannot draw a Digest response derived from the password.
+     * Null keeps the old scheme-only rule, for clients built without an account.
+     */
+    private val isAccountOrigin: ((HttpUrl) -> Boolean)? = null,
 ) : Authenticator {
 
     companion object {
@@ -47,7 +55,8 @@ class DigestAuthenticator(
      *
      * When the rejected request already carried a Digest header, retries only if the nonce
      * is stale; otherwise the credentials are wrong and it gives up. Also gives up on plain
-     * http unless [allowCleartext].
+     * http unless [allowCleartext], and on a challenge outside the account's origin when
+     * [isAccountOrigin] is set.
      *
      * @return the request with a Digest Authorization header, or null to give up
      */
@@ -55,6 +64,10 @@ class DigestAuthenticator(
     override fun authenticate(route: Route?, response: Response): Request? {
         if (!response.request.url.isHttps && !allowCleartext) {
             Log.w(TAG, "Not answering a Digest challenge over plain http")
+            return null
+        }
+        if (isAccountOrigin != null && !isAccountOrigin.invoke(response.request.url)) {
+            Log.w(TAG, "Not answering a Digest challenge outside the account's origin")
             return null
         }
         val challenge = parseDigestChallenge(response) ?: return null

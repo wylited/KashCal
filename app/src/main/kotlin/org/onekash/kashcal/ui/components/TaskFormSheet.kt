@@ -71,9 +71,12 @@ import org.onekash.kashcal.ui.components.pickers.EventFormRow
 import org.onekash.kashcal.ui.model.CalendarGroup
 import org.onekash.kashcal.ui.shared.contrastForegroundOn
 import org.onekash.kashcal.util.DateTimeUtils
+import org.onekash.kashcal.util.TimezoneUtils
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * The task form's fields. [dueDateMillis] is the date picker's local-midnight timestamp of the
@@ -261,6 +264,7 @@ fun TaskFormSheet(
         )
     ) {
         Surface(modifier = modifier.fillMaxSize()) {
+            SyncDialogSystemBarAppearance()
             val paneTitleText = if (state.isEditMode) {
                 stringResource(R.string.action_edit)
             } else {
@@ -580,7 +584,11 @@ private fun TaskFormState.withCalendarResolved(
     )
 }
 
-/** The due row's value line: the date, with the time when the due is timed. */
+/**
+ * The due row's value line: the date, with the wall time when the due is timed. The time is the
+ * due zone's wall time — the same fields the wheel edits — so the row and the picker can't
+ * disagree; a foreign zone gets the zone's abbreviation appended, mirroring the event form.
+ */
 @Composable
 private fun dueValueLabel(state: TaskFormState, use24Hour: Boolean): String {
     if (!state.hasDue || state.dueDateMillis == null) return ""
@@ -590,24 +598,18 @@ private fun dueValueLabel(state: TaskFormState, use24Hour: Boolean): String {
         pattern = DateTimeUtils.localizedPattern("EEEMMMd")
     )
     if (state.isAllDay) return dateText
-    val timeText = DateTimeUtils.formatEventTime(
-        duePreviewInstant(state),
-        isAllDay = false,
-        pattern = if (use24Hour) "HH:mm" else "h:mm a"
-    )
-    return "$dateText $timeText"
-}
-
-/** Rebuilds the due instant from the picker fields, for display only. */
-private fun duePreviewInstant(state: TaskFormState): Long {
-    val dueDate = state.dueDateMillis ?: return 0L
     val zone = state.dueTimezone.asZoneId() ?: ZoneId.systemDefault()
-    // Same decode as [TaskFormState.toDueFields]: device-zone date, due-zone wall time.
-    return deviceLocalDate(dueDate)
+    val timeText = deviceLocalDate(state.dueDateMillis)
         .atTime(state.dueHour, state.dueMinute)
-        .atZone(zone)
-        .toInstant()
-        .toEpochMilli()
+        .format(
+            DateTimeFormatter.ofPattern(
+                if (use24Hour) "HH:mm" else "h:mm a",
+                Locale.getDefault()
+            )
+        )
+    if (zone == ZoneId.systemDefault()) return "$dateText $timeText"
+    val abbreviation = remember(zone.id) { TimezoneUtils.getAbbreviation(zone.id) }
+    return "$dateText $timeText ($abbreviation)"
 }
 
 /** "None" for the undefined priority, else the number itself. */
@@ -666,11 +668,11 @@ private fun TaskCalendarPickerRow(
             Column(modifier = Modifier.fillMaxWidth()) {
                 val groups = calendarGroups
                     .filterNot { it.isDeviceSection }
-                    .map { group -> group to group.calendars.filter { it.supportsVTodo } }
+                    .map { group -> group to group.calendars.filter { it.supportsVTodo && !it.isReadOnly } }
                     .filter { (_, calendars) -> calendars.isNotEmpty() }
                 if (groups.isEmpty()) {
                     Text(
-                        text = stringResource(R.string.tasks_empty),
+                        text = stringResource(R.string.task_calendar_none_vtodo),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)

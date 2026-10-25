@@ -72,13 +72,14 @@ class ImmediatePushIntegrationTest {
     }
 
     @Test
-    fun `multiple rapid syncs are coalesced via REPLACE policy`() {
+    fun `multiple rapid syncs are coalesced into one work item`() {
         // When - rapid requests, as from quick successive edits
         repeat(5) {
             syncScheduler.requestExpeditedSync(forceFullSync = false)
         }
 
-        // Then - only one work item due to ExistingWorkPolicy.REPLACE
+        // Then - only one work item: ExistingWorkPolicy.KEEP keeps the pending request and
+        // drops the new ones (it must not replace a RUNNING one mid-push either)
         val workInfos = workManager.getWorkInfosForUniqueWork(SyncScheduler.EXPEDITED_SYNC_WORK).get()
         assertEquals(
             "Multiple rapid requests should be coalesced into 1 work item",

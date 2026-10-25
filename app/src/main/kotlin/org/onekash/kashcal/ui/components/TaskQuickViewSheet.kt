@@ -51,11 +51,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.onekash.kashcal.R
 import org.onekash.kashcal.data.db.entity.Task
+import org.onekash.kashcal.ui.util.DayPagerUtils
 import org.onekash.kashcal.util.DateTimeUtils
-import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.ZoneOffset
 
 /**
  * Shows one task's details in a bottom sheet, the task counterpart of [EventQuickViewSheet]:
@@ -82,7 +81,9 @@ fun TaskQuickViewSheet(
     val timePattern = remember(timeFormat, is24HourDevice) {
         DateTimeUtils.getTimePattern(timeFormat, is24HourDevice)
     }
-    val isOverdue = remember(task) { task.isOverdueTask() }
+    val isOverdue = remember(task) {
+        taskIsOverdue(task, DayPagerUtils.localDateToDayCode(LocalDate.now()), ZoneId.systemDefault())
+    }
 
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = !task.description.isNullOrBlank()
@@ -330,16 +331,4 @@ private fun dueValueLabel(task: Task, timePattern: String): String {
     val dateText = DateTimeUtils.formatEventDateShort(whenTs, isAllDay)
     val timeText = DateTimeUtils.formatEventTime(whenTs, isAllDay, timePattern)
     return if (timeText.isEmpty()) dateText else "$dateText $timeText"
-}
-
-/**
- * True when an open task's placement day is before today, the same day-based rule the task
- * list groups by: an all-day due reads as its calendar date, not as a UTC-midnight instant.
- */
-private fun Task.isOverdueTask(today: LocalDate = LocalDate.now()): Boolean {
-    if (!isOpen) return false
-    val ts = whenTs ?: return false
-    val zone = if (dueTs != null && dueIsAllDay) ZoneOffset.UTC else ZoneId.systemDefault()
-    val date = Instant.ofEpochMilli(ts).atZone(zone).toLocalDate()
-    return date.isBefore(today)
 }

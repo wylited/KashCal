@@ -30,8 +30,9 @@ import org.onekash.kashcal.sync.provider.icloud.ICloudQuirks
 
 /**
  * Tests [PullStrategy]'s task paths against mocked DAOs and a mocked client: the PROPFIND
- * listing, etag diff and stale sweep of [PullStrategy.pullTasks], and the VTODO ingestion of
- * [PullStrategy.processEvents]' task pass for VTODO-only and mixed VEVENT+VTODO resources.
+ * listing, etag diff and stale sweep of [PullStrategy.pullTasks], the VTODO ingestion of
+ * [PullStrategy.processEvents]' task pass for VTODO-only and mixed VEVENT+VTODO resources,
+ * and the hard-delete of a task whose mixed resource lost its VTODO.
  */
 class PullStrategyTaskSyncTest {
 
@@ -104,6 +105,21 @@ class PullStrategyTaskSyncTest {
         appendLine("STATUS:NEEDS_ACTION")
         appendLine("DUE:20260602T120000Z")
         appendLine("END:VTODO")
+        appendLine("END:VCALENDAR")
+    }
+
+    /** The same resource with the VTODO stripped, as after a server-side VEVENT-only rewrite. */
+    private val eventOnlyIcs = buildString {
+        appendLine("BEGIN:VCALENDAR")
+        appendLine("VERSION:2.0")
+        appendLine("PRODID:-//Test//EN")
+        appendLine("BEGIN:VEVENT")
+        appendLine("UID:event-1@example.com")
+        appendLine("DTSTAMP:20260101T000000Z")
+        appendLine("DTSTART:20260601T120000Z")
+        appendLine("DTEND:20260601T130000Z")
+        appendLine("SUMMARY:Mixed Event")
+        appendLine("END:VEVENT")
         appendLine("END:VCALENDAR")
     }
 
@@ -391,6 +407,223 @@ class PullStrategyTaskSyncTest {
         // The event half lands; the VTODO half is held.
         coVerify { eventsDao.upsert(any()) }
         coVerify(exactly = 0) { tasksDao.upsert(any()) }
+    }
+
+    @Test
+    fun `processEvents deletes the stale task of a resource that lost its VTODO`() = runTest {
+        val resourceUrl = "https://caldav.example.com/user/tasks/mixed.ics"
+        val staleTask = task(
+            id = 70L,
+            uid = "todo-1@example.com",
+            caldavUrl = resourceUrl,
+            etag = "\"e-mixed\""
+        )
+
+        // Drive a full pull: changed ctag, no sync token, the resource listed with a new etag.
+        coEvery { client.getCtag(calendar.caldavUrl) } returns CalDavResult.success(
+            CalendarMetadataProbe(ctag = "ctag-new", displayName = null, color = null, isReadOnly = null)
+        )
+        coEvery { calendarRepository.getCalendarById(calendar.id) } returns calendar
+        coEvery { client.getSyncToken(calendar.caldavUrl) } returns CalDavResult.success(null)
+        coEvery {
+            client.fetchEtagsInRange(calendar.caldavUrl, any(), any())
+        } returns CalDavResult.success(listOf(resourceUrl to "\"e-mixed-2\""))
+        coEvery { eventsDao.deleteDuplicateMasterEvents() } returns 0
+        coEvery { eventsDao.getByCalendarIdInRange(calendar.id, any(), any()) } returns emptyList()
+        coEvery { eventsDao.getEtagMapForCalendar(calendar.id, any(), any()) } returns emptyList()
+        coEvery {
+            client.fetchEventsByHref(calendar.caldavUrl, any())
+        } returns CalDavResult.success(listOf(
+            CalDavEvent(href = resourceUrl, url = resourceUrl, etag = "\"e-mixed-2\"", icalData = eventOnlyIcs)
+        ))
+        coEvery { eventsDao.getMasterByUidAndCalendar("event-1@example.com", calendar.id) } returns null
+        coEvery { eventsDao.getByCaldavUrl(resourceUrl) } returns null
+        coEvery { eventsDao.getSyncStatus(any()) } returns SyncStatus.SYNCED
+        coEvery { eventsDao.upsert(any()) } returns 1L
+        coEvery { tasksDao.getAllForCalendar(calendar.id) } returns listOf(staleTask)
+
+        pullStrategy.pull(calendar, client = client)
+
+        // The event half lands; the orphaned task half is hard-deleted and no DELETE is queued.
+        coVerify { eventsDao.upsert(any()) }
+        coVerify(exactly = 0) { tasksDao.upsert(any()) }
+        coVerify(exactly = 1) { tasksDao.deleteById(70L) }
+        coVerify(exactly = 0) { database.pendingTaskOperationsDao().insert(any()) }
+    }
+
+    @Test
+    fun `processEvents deletes nothing when the VTODO-less resource never backed a task`() = runTest {
+        val resourceUrl = "https://caldav.example.com/user/tasks/mixed.ics"
+
+        coEvery { client.getCtag(calendar.caldavUrl) } returns CalDavResult.success(
+            CalendarMetadataProbe(ctag = "ctag-new", displayName = null, color = null, isReadOnly = null)
+        )
+        coEvery { calendarRepository.getCalendarById(calendar.id) } returns calendar
+        coEvery { client.getSyncToken(calendar.caldavUrl) } returns CalDavResult.success(null)
+        coEvery {
+            client.fetchEtagsInRange(calendar.caldavUrl, any(), any())
+        } returns CalDavResult.success(listOf(resourceUrl to "\"e-mixed-2\""))
+        coEvery { eventsDao.deleteDuplicateMasterEvents() } returns 0
+        coEvery { eventsDao.getByCalendarIdInRange(calendar.id, any(), any()) } returns emptyList()
+        coEvery { eventsDao.getEtagMapForCalendar(calendar.id, any(), any()) } returns emptyList()
+        coEvery {
+            client.fetchEventsByHref(calendar.caldavUrl, any())
+        } returns CalDavResult.success(listOf(
+            CalDavEvent(href = resourceUrl, url = resourceUrl, etag = "\"e-mixed-2\"", icalData = eventOnlyIcs)
+        ))
+        coEvery { eventsDao.getMasterByUidAndCalendar("event-1@example.com", calendar.id) } returns null
+        coEvery { eventsDao.getByCaldavUrl(resourceUrl) } returns null
+        coEvery { eventsDao.getSyncStatus(any()) } returns SyncStatus.SYNCED
+        coEvery { eventsDao.upsert(any()) } returns 1L
+        coEvery { tasksDao.getAllForCalendar(calendar.id) } returns emptyList()
+
+        pullStrategy.pull(calendar, client = client)
+
+        coVerify { eventsDao.upsert(any()) }
+        coVerify(exactly = 0) { tasksDao.deleteById(any()) }
+    }
+
+    @Test
+    fun `processEvents keeps pending and recently pushed tasks when a resource loses its VTODO`() = runTest {
+        val resourceUrl = "https://caldav.example.com/user/tasks/mixed.ics"
+        val pending = task(
+            id = 80L,
+            uid = "todo-1@example.com",
+            caldavUrl = resourceUrl,
+            syncStatus = SyncStatus.PENDING_UPDATE
+        )
+        val justPushed = task(id = 81L, uid = "todo-1@example.com", caldavUrl = resourceUrl)
+
+        coEvery { client.getCtag(calendar.caldavUrl) } returns CalDavResult.success(
+            CalendarMetadataProbe(ctag = "ctag-new", displayName = null, color = null, isReadOnly = null)
+        )
+        coEvery { calendarRepository.getCalendarById(calendar.id) } returns calendar
+        coEvery { client.getSyncToken(calendar.caldavUrl) } returns CalDavResult.success(null)
+        coEvery {
+            client.fetchEtagsInRange(calendar.caldavUrl, any(), any())
+        } returns CalDavResult.success(listOf(resourceUrl to "\"e-mixed-2\""))
+        coEvery { eventsDao.deleteDuplicateMasterEvents() } returns 0
+        coEvery { eventsDao.getByCalendarIdInRange(calendar.id, any(), any()) } returns emptyList()
+        coEvery { eventsDao.getEtagMapForCalendar(calendar.id, any(), any()) } returns emptyList()
+        coEvery {
+            client.fetchEventsByHref(calendar.caldavUrl, any())
+        } returns CalDavResult.success(listOf(
+            CalDavEvent(href = resourceUrl, url = resourceUrl, etag = "\"e-mixed-2\"", icalData = eventOnlyIcs)
+        ))
+        coEvery { eventsDao.getMasterByUidAndCalendar("event-1@example.com", calendar.id) } returns null
+        coEvery { eventsDao.getByCaldavUrl(resourceUrl) } returns null
+        coEvery { eventsDao.getSyncStatus(any()) } returns SyncStatus.SYNCED
+        coEvery { eventsDao.upsert(any()) } returns 1L
+
+        // A task with pending local changes keeps its row: the push sends the user's edit first.
+        coEvery { tasksDao.getAllForCalendar(calendar.id) } returns listOf(pending)
+        pullStrategy.pull(calendar, client = client)
+
+        // So does a task pushed earlier in this sync cycle, over a possibly stale server read.
+        coEvery { tasksDao.getAllForCalendar(calendar.id) } returns listOf(justPushed)
+        pullStrategy.pull(calendar, client = client, recentlyPushedTaskIds = setOf(81L))
+
+        coVerify { eventsDao.upsert(any()) }
+        coVerify(exactly = 0) { tasksDao.deleteById(any()) }
+    }
+
+    /** Drives one full event pull whose listing fetches only [resourceUrl] holding [icalData]. */
+    private suspend fun pullOneResource(resourceUrl: String, icalData: String) {
+        coEvery { client.getCtag(calendar.caldavUrl) } returns CalDavResult.success(
+            CalendarMetadataProbe(ctag = "ctag-new", displayName = null, color = null, isReadOnly = null)
+        )
+        coEvery { calendarRepository.getCalendarById(calendar.id) } returns calendar
+        coEvery { client.getSyncToken(calendar.caldavUrl) } returns CalDavResult.success(null)
+        coEvery {
+            client.fetchEtagsInRange(calendar.caldavUrl, any(), any())
+        } returns CalDavResult.success(listOf(resourceUrl to "\"e-changed\""))
+        coEvery { eventsDao.deleteDuplicateMasterEvents() } returns 0
+        coEvery { eventsDao.getByCalendarIdInRange(calendar.id, any(), any()) } returns emptyList()
+        coEvery { eventsDao.getEtagMapForCalendar(calendar.id, any(), any()) } returns emptyList()
+        coEvery {
+            client.fetchEventsByHref(calendar.caldavUrl, any())
+        } returns CalDavResult.success(
+            listOf(CalDavEvent(href = resourceUrl, url = resourceUrl, etag = "\"e-changed\"", icalData = icalData))
+        )
+        coEvery { eventsDao.getMasterByUidAndCalendar(any(), calendar.id) } returns null
+        coEvery { eventsDao.getByCaldavUrl(any()) } returns null
+        coEvery { eventsDao.getSyncStatus(any()) } returns SyncStatus.SYNCED
+        coEvery { eventsDao.upsert(any()) } returns 1L
+        pullStrategy.pull(calendar, client = client)
+    }
+
+    @Test
+    fun `processEvents ingests only the master of a recurring task resource`() = runTest {
+        val resourceUrl = "https://caldav.example.com/user/tasks/recurring.ics"
+        // Exception first: keyed by UID alone it would land as (or over) the master's row.
+        val recurringIcs = buildString {
+            appendLine("BEGIN:VCALENDAR")
+            appendLine("VERSION:2.0")
+            appendLine("PRODID:-//Test//EN")
+            appendLine("BEGIN:VTODO")
+            appendLine("UID:rec-1@example.com")
+            appendLine("DTSTAMP:20260101T000000Z")
+            appendLine("RECURRENCE-ID:20260603T120000Z")
+            appendLine("SUMMARY:Exception instance")
+            appendLine("STATUS:COMPLETED")
+            appendLine("END:VTODO")
+            appendLine("BEGIN:VTODO")
+            appendLine("UID:rec-1@example.com")
+            appendLine("DTSTAMP:20260101T000000Z")
+            appendLine("SUMMARY:Recurring master")
+            appendLine("STATUS:NEEDS-ACTION")
+            appendLine("DUE:20260602T120000Z")
+            appendLine("RRULE:FREQ=DAILY")
+            appendLine("END:VTODO")
+            appendLine("END:VCALENDAR")
+        }
+        coEvery { tasksDao.getByUidAndCalendar("rec-1@example.com", calendar.id) } returns null
+        coEvery { tasksDao.getByCaldavUrl(resourceUrl) } returns null
+
+        pullOneResource(resourceUrl, recurringIcs)
+
+        // Only the master becomes a row, with the series' RRULE and DUE, not the
+        // exception's COMPLETED status; the exception stays in rawIcal for the push to patch.
+        val upserted = mutableListOf<Task>()
+        coVerify(exactly = 1) { tasksDao.upsert(capture(upserted)) }
+        val master = upserted.single()
+        assertEquals("Recurring master", master.summary)
+        assertEquals("FREQ=DAILY", master.rrule)
+        assertEquals("NEEDS_ACTION", master.status)
+        assertEquals(resourceUrl, master.caldavUrl)
+        assertEquals("\"e-changed\"", master.etag)
+    }
+
+    @Test
+    fun `the stale delete matches a row whose URL differs by percent-encoding`() = runTest {
+        // The row stores the literal '@' of its created URL; the server echoes the href with
+        // '%40' (Radicale, #333). A verbatim lookup misses and the stale row survives.
+        val resourceUrl = "https://caldav.example.com/user/tasks/rec%401.ics"
+        val rowUrl = "https://caldav.example.com/user/tasks/rec@1.ics"
+        val staleTask = task(id = 90L, uid = "rec-1@example.com", caldavUrl = rowUrl, etag = "\"e-old\"")
+        coEvery { tasksDao.getAllForCalendar(calendar.id) } returns listOf(staleTask)
+
+        pullOneResource(resourceUrl, eventOnlyIcs)
+
+        coVerify(exactly = 1) { tasksDao.deleteById(90L) }
+    }
+
+    @Test
+    fun `a fetched body that fails to parse keeps the stale row`() = runTest {
+        val resourceUrl = "https://caldav.example.com/user/tasks/broken.ics"
+        val staleTask = task(
+            id = 91L,
+            uid = "broken-uid@example.com",
+            caldavUrl = resourceUrl,
+            etag = "\"e-old\""
+        )
+        coEvery { tasksDao.getAllForCalendar(calendar.id) } returns listOf(staleTask)
+
+        // A truncated fetch: no VTODO marker and nothing that parses. Only a parse that
+        // succeeds with zero VTODOs may hard-delete the row.
+        pullOneResource(resourceUrl, "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:V")
+
+        coVerify(exactly = 0) { tasksDao.deleteById(any()) }
     }
 
     @Test

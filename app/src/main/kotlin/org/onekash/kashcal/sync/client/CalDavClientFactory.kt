@@ -97,13 +97,18 @@ class OkHttpCalDavClientFactory @Inject constructor() : CalDavClientFactory {
         // Plain http is allowed only for an account the user set up with http://; any other
         // plain http request is refused before it is sent, so Basic and Digest never go over it.
         val allowCleartext = DavTransportGuard.allowsCleartext(credentials.serverUrl)
+        // Everything that carries the account's identity — cleartext, redirects and the
+        // Basic header — stays on the account's own origin (scheme, host, port), so a
+        // poisoned stored URL or a cross-origin redirect can never ship it off-origin.
+        // iCloud's numbered partition hosts count as the account's own.
+        val isAccountOrigin = DavTransportGuard.accountOriginRule(credentials.serverUrl, quirks::isSameServerRedirect)
         val clientBuilder = baseHttpClient.newBuilder()
             // Follow redirects ourselves with the same method and body (OkHttp would
             // turn a redirected PUT or DELETE into a GET that looks like a success).
-            .installDavTransport(allowCleartext)
+            .installDavTransport(allowCleartext, isAccountOrigin)
             // A Digest server rejects the preemptive Basic with a 401 challenge; this
             // authenticator answers it (RFC 2617/7616) and OkHttp retries.
-            .authenticator(DigestAuthenticator(credentials.username, credentials.password, allowCleartext))
+            .authenticator(DigestAuthenticator(credentials.username, credentials.password, allowCleartext, isAccountOrigin))
             .addNetworkInterceptor { chain ->
                 val requestBuilder = chain.request().newBuilder()
 
@@ -111,7 +116,7 @@ class OkHttpCalDavClientFactory @Inject constructor() : CalDavClientFactory {
                 // retry after a Digest challenge carries a Digest header, which must not be
                 // overwritten with Basic or the request loops on 401 forever.
                 if (chain.request().header("Authorization") == null &&
-                    DavTransportGuard.mayAttachCredentials(chain.request().url, allowCleartext)
+                    DavTransportGuard.mayAttachCredentials(chain.request().url, allowCleartext, isAccountOrigin)
                 ) {
                     // Issue #49: Use UTF-8 encoding for non-ASCII passwords (RFC 7617)
                     requestBuilder.header(

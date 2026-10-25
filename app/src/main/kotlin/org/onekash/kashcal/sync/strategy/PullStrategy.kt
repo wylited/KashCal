@@ -529,7 +529,7 @@ class PullStrategy @Inject constructor(
                 eventsDao.deleteById(event.id)
                 deleted++
             } else {
-                Log.d(TAG, "Deletion href matched no local event: $url")
+                Log.d(TAG, "Deletion href matched no local event: ${filenameOf(url)}")
             }
         }
 
@@ -1022,13 +1022,13 @@ class PullStrategy @Inject constructor(
                 // A row without a server URL was never listed; there is nothing to sweep.
                 val url = task.caldavUrl ?: continue
                 if (task.hasPendingChanges() || task.id in recentlyPushedTaskIds) {
-                    Log.d(TAG, "Keeping task $url - " +
+                    Log.d(TAG, "Keeping task uid=${task.uid} at ${filenameOf(url)} - " +
                         if (task.hasPendingChanges()) "has pending local changes (${task.syncStatus})"
                         else "recently pushed in this sync cycle")
                     continue
                 }
                 if ((CaldavUrlNormalizer.canonicalize(url) ?: url) !in serverUrls) {
-                    Log.d(TAG, "Deleting stale task: $url")
+                    Log.d(TAG, "Deleting stale task: uid=${task.uid} at ${filenameOf(url)}")
                     tasksDao.deleteById(task.id)
                     sweptIds.add(task.id)
                     deleted++
@@ -1295,7 +1295,7 @@ class PullStrategy @Inject constructor(
             // an eventually consistent iCloud read from overwriting it with stale data. A merged
             // upload or a retried reply leaves the old etag, so its event passes this check.
             if (existingEvent != null && existingEvent.etag != null && existingEvent.etag == meta.etag) {
-                Log.d(TAG, "Skipping ${meta.caldavUrl} - etag unchanged (${meta.etag})")
+                Log.d(TAG, "Skipping ${filenameOf(meta.caldavUrl)} - etag unchanged")
                 sessionBuilder?.incrementSkipEtagUnchanged()
                 uidToMasterEvent[meta.parsed.uid] = existingEvent
                 continue
@@ -1450,11 +1450,11 @@ class PullStrategy @Inject constructor(
             if (existingEvent == null) {
                 added++
                 sessionBuilder?.incrementWritten()
-                Log.d(TAG, "Pulled new event: ${savedEvent.title} with etag='${savedEvent.etag}'")
+                Log.d(TAG, "Pulled new event: uid=${savedEvent.uid}")
             } else {
                 updated++
                 sessionBuilder?.incrementUpdated()
-                Log.d(TAG, "Updated event: ${savedEvent.title} with etag='${savedEvent.etag}'")
+                Log.d(TAG, "Updated event: uid=${savedEvent.uid}")
             }
 
             // A synthetic placeholder has nothing the user saw, so nothing to compare with.
@@ -1584,7 +1584,7 @@ class PullStrategy @Inject constructor(
                         Log.i(TAG, "Self-healed unlinked exception ${meta.caldavUrl} on etag-skip path")
                     }
                 }
-                Log.d(TAG, "Skipping exception ${meta.caldavUrl} - etag unchanged (${meta.etag})")
+                Log.d(TAG, "Skipping exception ${filenameOf(meta.caldavUrl)} - etag unchanged")
                 sessionBuilder?.incrementSkipEtagUnchanged()
                 continue
             }
@@ -1863,6 +1863,20 @@ class PullStrategy @Inject constructor(
      * version ([recentlyPushedTaskIds]): iCloud's CDN may serve a stale read before the PUT
      * has propagated, and the local row holds the etag the write returned.
      *
+     * A fetched resource whose etag changed but which no longer holds a VTODO has its stale
+     * task row hard-deleted ([deleteStaleTaskForResource]): the server no longer holds the
+     * task, and the URL-based sweep of [pullTasks] would keep the row forever. The delete
+     * decision is made only on a parse that succeeds with zero VTODOs — never on a raw
+     * `BEGIN:VTODO` marker miss, which a case-variant or truncated body would trip.
+     *
+     * Divergence from the event pass: only a recurring task's master becomes a row. A
+     * RECURRENCE-ID exception shares the master's UID, and this pass keys rows by UID alone,
+     * so an exception-first resource would overwrite the master row (losing RRULE and DUE of
+     * the series); an exception is skipped instead. It stays modeled nowhere but preserved in
+     * `Task.rawIcal`, which the push patches in place, so it survives local edits. A resource
+     * holding only exceptions therefore ingests nothing; the master may live in its own
+     * resource on the server.
+     *
      * @return added and updated task counts, for the caller's session accounting.
      */
     private suspend fun processTasks(
@@ -1877,12 +1891,21 @@ class PullStrategy @Inject constructor(
         var updated = 0
 
         for (serverEvent in serverEvents) {
-            if (!serverEvent.icalData.contains("BEGIN:VTODO")) continue
+            // Cheap case-insensitive marker check only; the delete decision itself parses the
+            // body in [deleteStaleTaskForResource], so a truncated or case-variant fetch can't
+            // hard-delete a row on a marker miss alone.
+            if (!serverEvent.icalData.contains("VTODO", ignoreCase = true)) {
+                // The resource was fetched this cycle because its etag changed, yet it holds
+                // no VTODO: a local task at this URL is stale and the URL-based sweep of
+                // [pullTasks] can never remove it, because the server still lists the resource.
+                deleteStaleTaskForResource(calendar, serverEvent, sessionBuilder, recentlyPushedTaskIds)
+                continue
+            }
 
             val parseResult = try {
                 icalParser.parseAllTodos(serverEvent.icalData)
             } catch (e: Exception) {
-                Log.e(TAG, "Task parse exception for ${serverEvent.url}: ${e.javaClass.simpleName}: ${e.message}")
+                Log.e(TAG, "Task parse exception for ${filenameOf(serverEvent.url)}: ${e.javaClass.simpleName}: ${e.message}")
                 sessionBuilder?.incrementSkipParseError()
                 sessionBuilder?.addWarning("Failed to parse task ${filenameOf(serverEvent.url)}: ${e.javaClass.simpleName}: ${e.message}")
                 continue
@@ -1891,14 +1914,36 @@ class PullStrategy @Inject constructor(
             val todos = when (parseResult) {
                 is ParseResult.Success -> parseResult.value
                 is ParseResult.Error -> {
-                    Log.w(TAG, "Task parse error for ${serverEvent.url}: ${parseResult.error.message}")
+                    Log.w(TAG, "Task parse error for ${filenameOf(serverEvent.url)}: ${parseResult.error.message}")
                     sessionBuilder?.incrementSkipParseError()
                     sessionBuilder?.addWarning("Task parse error for ${filenameOf(serverEvent.url)}: ${parseResult.error.message}")
                     continue
                 }
             }
 
+            if (todos.isEmpty()) {
+                // The body mentions a VTODO but parses to none (a stripped rewrite); the
+                // stale-row decision re-parses in [deleteStaleTaskForResource].
+                deleteStaleTaskForResource(calendar, serverEvent, sessionBuilder, recentlyPushedTaskIds)
+                continue
+            }
+
             for (todo in todos) {
+                // A RECURRENCE-ID exception shares its master's UID, and this pass keys rows
+                // by UID alone: ingested first it would overwrite the master row (losing the
+                // RRULE/DUE of the series), ingested second it is only skipped by the etag
+                // check's luck. Only the master becomes a row; the exception lives on in
+                // rawIcal, which the push patches in place, so server-side edits to it are
+                // preserved and never silently dropped.
+                if (todo.recurrenceId != null) {
+                    Log.d(
+                        TAG,
+                        "Skipping RECURRENCE-ID exception VTODO uid=${todo.uid} at " +
+                            filenameOf(serverEvent.url)
+                    )
+                    continue
+                }
+
                 // UID first, like the event pass: it is stable across server hostname changes.
                 // The caldavUrl fallback is a global query, and a row moved to another calendar
                 // keeps its old URL, so only a hit in this calendar counts.
@@ -1908,13 +1953,13 @@ class PullStrategy @Inject constructor(
                 // Local-first: TaskPushStrategy sends pending local changes first; the server
                 // wins only after they are synced, or the local edit would be lost.
                 if (existing != null && existing.hasPendingChanges()) {
-                    Log.d(TAG, "Skipping task at ${serverEvent.url} - has pending local changes (${existing.syncStatus})")
+                    Log.d(TAG, "Skipping task uid=${todo.uid} at ${filenameOf(serverEvent.url)} - has pending local changes (${existing.syncStatus})")
                     sessionBuilder?.incrementSkipPendingLocal()
                     continue
                 }
 
                 if (existing != null && existing.id in recentlyPushedTaskIds) {
-                    Log.d(TAG, "Skipping task at ${serverEvent.url} - recently pushed in this sync cycle")
+                    Log.d(TAG, "Skipping task uid=${todo.uid} at ${filenameOf(serverEvent.url)} - recently pushed in this sync cycle")
                     sessionBuilder?.incrementSkipRecentlyPushed()
                     continue
                 }
@@ -1923,7 +1968,7 @@ class PullStrategy @Inject constructor(
                 // a first-attempt write the local row holds the server's new etag, so this also
                 // stops an eventually consistent read from overwriting it with stale data.
                 if (existing != null && existing.etag != null && existing.etag == serverEvent.etag) {
-                    Log.d(TAG, "Skipping task at ${serverEvent.url} - etag unchanged (${serverEvent.etag})")
+                    Log.d(TAG, "Skipping task uid=${todo.uid} at ${filenameOf(serverEvent.url)} - etag unchanged")
                     sessionBuilder?.incrementSkipEtagUnchanged()
                     continue
                 }
@@ -1969,6 +2014,68 @@ class PullStrategy @Inject constructor(
         }
 
         return added to updated
+    }
+
+    /**
+     * Deletes the local task row a VTODO-less fetched resource leaves stale. [processTasks]
+     * only sees resources fetched this cycle because their etag changed, so a resource with
+     * no VTODO that matches a local row's caldavUrl means the server dropped the task — e.g.
+     * a mixed VEVENT+VTODO resource rewritten VEVENT-only. The URL-based sweep in
+     * [pullTasks] can never remove such a row, because the server still lists the resource.
+     *
+     * The row lookup compares canonicalized URLs, exactly like the sweep: a server that echoes
+     * the href with '@' re-encoded as '%40' (#333) must still match the row stored with the
+     * literal '@' URL, or the stale row survives forever. Only rows of this calendar count.
+     *
+     * The delete is hard, like the sweep's: the server truth is that the task is gone, so no
+     * DELETE is pushed and no pending operation is queued. It fires only when the body parses
+     * AND yields zero VTODOs — a case-variant `BEGIN:VTODO` marker or a truncated body keeps
+     * the row. Rows with pending local changes and tasks pushed earlier in this sync cycle
+     * are kept, exactly as the sweep keeps them. A resource that never backed a task is a
+     * lookup miss and a no-op.
+     */
+    private suspend fun deleteStaleTaskForResource(
+        calendar: Calendar,
+        serverEvent: CalDavEvent,
+        sessionBuilder: SyncSessionBuilder?,
+        recentlyPushedTaskIds: Set<Long>
+    ) {
+        val canonicalUrl = CaldavUrlNormalizer.canonicalize(serverEvent.url) ?: serverEvent.url
+        val stale = tasksDao.getAllForCalendar(calendar.id).firstOrNull { row ->
+            val rowUrl = row.caldavUrl ?: return@firstOrNull false
+            (CaldavUrlNormalizer.canonicalize(rowUrl) ?: rowUrl) == canonicalUrl
+        } ?: return
+        if (stale.hasPendingChanges() || stale.id in recentlyPushedTaskIds) {
+            Log.d(TAG, "Keeping task uid=${stale.uid} at ${filenameOf(serverEvent.url)} - " +
+                if (stale.hasPendingChanges()) "has pending local changes (${stale.syncStatus})"
+                else "recently pushed in this sync cycle")
+            return
+        }
+        // Parse before delete: only a body that parses to zero VTODOs proves the server
+        // dropped the task. A parse failure or a surviving VTODO keeps the row.
+        val parsedTodos = try {
+            icalParser.parseAllTodos(serverEvent.icalData).getOrNull()
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w(
+                TAG,
+                "Stale-task check could not parse ${filenameOf(serverEvent.url)}: " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            null
+        } ?: return
+        if (parsedTodos.isNotEmpty()) return
+        try {
+            Log.d(
+                TAG,
+                "Deleting stale task uid=${stale.uid} at ${filenameOf(serverEvent.url)} - " +
+                    "server resource no longer contains a VTODO"
+            )
+            tasksDao.deleteById(stale.id)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            recordProcessingFailure(sessionBuilder, serverEvent.url, "task ${stale.uid}", e)
+        }
     }
 
     /** A parsed VEVENT with the resource it came from. */

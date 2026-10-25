@@ -26,6 +26,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.onekash.kashcal.data.db.dao.PendingOperationsDao
+import org.onekash.kashcal.data.db.dao.PendingTaskOperationsDao
 import org.onekash.kashcal.data.db.dao.SyncLogsDao
 import org.onekash.kashcal.data.db.entity.Account
 import org.onekash.kashcal.data.db.entity.Calendar
@@ -64,8 +65,9 @@ import java.util.concurrent.TimeUnit
  * Tests [CalDavSyncWorker]: routing by sync type (full, calendar, account), getForegroundInfo, the
  * foreground notification gate, the mapping of sync results and throws to WorkManager results
  * (retry, failure, and success for the periodic run), input data, per-account credentials and
- * failure recording, reminder scheduling for synced changes, and the pending-operation lifecycle
- * (stale recovery, forced reset, expiry and its notification, 24-hour auto-reset).
+ * failure recording, reminder scheduling for synced changes, and the pending-operation
+ * lifecycle of both queues (stale recovery, forced reset, expiry and its notification,
+ * 24-hour auto-reset).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [34])
@@ -87,6 +89,7 @@ class CalDavSyncWorkerTest {
     private lateinit var reminderScheduler: ReminderScheduler
     private lateinit var eventReader: EventReader
     private lateinit var pendingOperationsDao: PendingOperationsDao
+    private lateinit var pendingTaskOperationsDao: PendingTaskOperationsDao
     private lateinit var syncSessionStore: SyncSessionStore
     private lateinit var syncLogsDao: SyncLogsDao
     private lateinit var iCloudUrlMigration: ICloudUrlMigration
@@ -121,6 +124,7 @@ class CalDavSyncWorkerTest {
         reminderScheduler = mockk(relaxed = true)
         eventReader = mockk(relaxed = true)
         pendingOperationsDao = mockk(relaxed = true)
+        pendingTaskOperationsDao = mockk(relaxed = true)
         syncSessionStore = mockk(relaxed = true)
         syncLogsDao = mockk(relaxed = true)
         iCloudUrlMigration = mockk(relaxed = true)
@@ -193,7 +197,7 @@ class CalDavSyncWorkerTest {
             reminderScheduler = reminderScheduler,
             eventReader = eventReader,
             pendingOperationsDao = pendingOperationsDao,
-            pendingTaskOperationsDao = mockk(relaxed = true),
+            pendingTaskOperationsDao = pendingTaskOperationsDao,
             syncSessionStore = syncSessionStore,
             syncLogsDao = syncLogsDao,
             iCloudUrlMigration = iCloudUrlMigration,
@@ -1315,6 +1319,27 @@ class CalDavSyncWorkerTest {
 
         // Then - auto-reset ran
         coVerify { pendingOperationsDao.autoResetOldFailed(any(), any(), any()) }
+    }
+
+    @Test
+    fun `doWork auto-resets old failed task operations on every sync`() = runTest {
+        // The task queue's counterpart of the events' 24-hour auto-reset: without it, a
+        // task operation that burned its retries is dead until a manual forced full sync.
+        coEvery { pendingOperationsDao.getExpiredOperations(any()) } returns emptyList()
+        coEvery { pendingTaskOperationsDao.autoResetOldFailed(any(), any()) } returns 2
+        coEvery { accountRepository.getEnabledAccounts() } returns emptyList()
+
+        val inputData = CalDavSyncWorker.createFullSyncInput(forceFullSync = false)
+        val worker = createWorker(inputData)
+
+        // When
+        worker.doWork()
+
+        // Then - the reset ran with a cutoff 24 hours before the sync's now
+        val failedBeforeSlot = slot<Long>()
+        val nowSlot = slot<Long>()
+        coVerify { pendingTaskOperationsDao.autoResetOldFailed(capture(failedBeforeSlot), capture(nowSlot)) }
+        assertEquals(PendingOperation.AUTO_RESET_FAILED_MS, nowSlot.captured - failedBeforeSlot.captured)
     }
 
     @Test

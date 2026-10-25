@@ -13,7 +13,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import org.onekash.kashcal.sync.contacts.ContactsBrowserWriteRepository
+import java.time.DateTimeException
 import java.time.LocalDate
+import java.time.Month
+import java.time.Year
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import javax.inject.Inject
@@ -317,8 +320,12 @@ class ContactsBrowserRepository @Inject constructor(
                 val parsed = ContactEventUtils.parseContactDate(cursor.getString(2))
                     ?: return@queryRows
                 // A year-less date is placed at the current year: the browser only formats the
-                // month and day, and LocalDate needs a year to exist.
-                val date = LocalDate.of(parsed.year ?: thisYear, parsed.month, parsed.day)
+                // month and day, and LocalDate needs a year to exist. contactEventDate clamps
+                // the day to the target year's month length (year-less Feb-29 -> Feb-28 in
+                // non-leap years) and skips only this row when the value is malformed, so one
+                // bad contact date cannot blank the whole list.
+                val date = contactEventDate(parsed.year ?: thisYear, parsed.month, parsed.day)
+                    ?: return@queryRows
                 val isBirthday =
                     cursor.getInt(1) == ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY
                 val existing = out[contactId]
@@ -411,7 +418,8 @@ class ContactsBrowserRepository @Inject constructor(
                 ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE -> {
                     val parsed = ContactEventUtils.parseContactDate(cursor.getString(1))
                         ?: return@queryRows
-                    val date = LocalDate.of(parsed.year ?: thisYear, parsed.month, parsed.day)
+                    val date = contactEventDate(parsed.year ?: thisYear, parsed.month, parsed.day)
+                        ?: return@queryRows
                     when (cursor.getInt(2)) {
                         ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY ->
                             if (birthday == null) birthday = date
@@ -493,9 +501,30 @@ fun sectionBucketFor(displayName: String): String {
     return if (first.isLetter()) first.toString() else "#"
 }
 
-/** Days until [date]'s next occurrence from [today]; 0 means today. */
+/**
+ * Builds the calendar date for a parsed contact event at [year], clamping [day] to the
+ * target year's month length — the same guard as RecurrenceRule.resolveFutureDate — so a
+ * year-less `--02-29` lands on Feb-28 in non-leap years instead of throwing. Returns null
+ * when the value is still unbuildable, so a malformed date skips one row instead of
+ * aborting the whole read.
+ */
+private fun contactEventDate(year: Int, month: Int, day: Int): LocalDate? = try {
+    val clampedDay = day.coerceAtMost(Month.of(month).length(Year.of(year).isLeap))
+    LocalDate.of(year, month, clampedDay)
+} catch (_: DateTimeException) {
+    null
+}
+
+/**
+ * Days until [date]'s next occurrence from [today]; 0 means today. A Feb-29 occurrence
+ * falls on Feb-28 in non-leap years.
+ */
 fun daysUntilNextOccurrence(date: LocalDate, today: LocalDate): Long {
-    val thisYear = date.withYear(today.year)
+    val thisYear = LocalDate.of(
+        today.year,
+        date.month,
+        date.dayOfMonth.coerceAtMost(date.month.length(today.isLeapYear)),
+    )
     val next = if (!thisYear.isBefore(today)) thisYear else thisYear.plusYears(1)
     return ChronoUnit.DAYS.between(today, next)
 }

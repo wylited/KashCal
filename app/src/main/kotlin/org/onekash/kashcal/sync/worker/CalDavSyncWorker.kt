@@ -62,9 +62,10 @@ import java.util.concurrent.TimeUnit
  * returns failure, which would stop the periodic spec for good; the catch in [doWork] says why.
  *
  * Every run first recovers both sync queues: operations a crash left IN_PROGRESS return to
- * PENDING after an hour, a forced full sync re-arms FAILED ones (events' ABANDONED too), and
- * task operations past [RetryDelays.OPERATION_LIFETIME_MS] are deleted, with the task rows
- * their DELETE had soft-deleted.
+ * PENDING after an hour, FAILED operations older than a day re-arm on their own, a forced
+ * full sync re-arms the rest (events' ABANDONED too), and task operations past
+ * [RetryDelays.OPERATION_LIFETIME_MS] are deleted, with the task rows their DELETE had
+ * soft-deleted.
  */
 @HiltWorker
 class CalDavSyncWorker @AssistedInject constructor(
@@ -295,6 +296,17 @@ class CalDavSyncWorker @AssistedInject constructor(
             )
             if (oldFailedResetCount > 0) {
                 Log.i(TAG, "Auto-reset $oldFailedResetCount failed operations older than 24h for retry")
+            }
+
+            // The task queue's counterpart of the same 24-hour reprieve: without it, a task
+            // operation that burned its retries is dead until a manual forced full sync. Its
+            // ops expire through deleteExpired above, so no lifetime cutoff applies here.
+            val oldFailedTaskResetCount = pendingTaskOperationsDao.autoResetOldFailed(
+                failedBefore = twentyFourHoursAgo,
+                now = now
+            )
+            if (oldFailedTaskResetCount > 0) {
+                Log.i(TAG, "Auto-reset $oldFailedTaskResetCount failed task operations older than 24h for retry")
             }
 
             val syncResult = when (syncType) {

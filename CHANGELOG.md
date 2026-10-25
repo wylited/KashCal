@@ -10,6 +10,8 @@ And the views themselves stopped being a fixed menu. Settings has a new Views pa
 
 Fixed: task edits — completing, creating, moving — reached the server only at the next periodic sync, so a ticked task could sit unpushed for hours. Every task change now schedules its sync immediately.
 
+Fixed during review: an upgrade could leave task support undiscovered — the on-device list, read-only subscriptions and existing CalDAV accounts all find and sync their tasks now; editing a server task keeps its attendees, categories, location, alarms and anything else sharing its file; failed task syncs retry after a day like events do; search results keep up with a ticked task and no longer offer cancelled ones; your sync password is only ever sent to the server you configured it for; the task widgets order tasks without a priority after prioritized ones and place all-day tasks on the right day; and the full-screen event, task and contact sheets keep the clock readable in the status bar.
+
 ### Everything in this release
 
 - Added two-way sync for task lists (VTODO): iCloud Reminders and generic `/tasks/` collections on CalDAV servers now sync their to-dos both ways, with an offline push queue that retries and lets the server's copy win when both sides changed

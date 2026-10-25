@@ -24,7 +24,10 @@ import org.onekash.kashcal.domain.model.AccountProvider
 import org.onekash.kashcal.network.DavTransportRefusal
 import org.onekash.kashcal.network.DavTransportRefusedException
 import org.onekash.kashcal.sync.client.CalDavClient
+import org.onekash.kashcal.sync.client.model.CalDavCalendar
 import org.onekash.kashcal.sync.client.model.CalDavResult
+import org.onekash.kashcal.sync.strategy.TaskPullResult
+import org.onekash.kashcal.sync.strategy.TaskPushResult
 import org.onekash.kashcal.sync.notification.SyncNotificationManager
 import org.onekash.kashcal.sync.session.ErrorType
 import org.onekash.kashcal.sync.session.SyncSessionStore
@@ -113,7 +116,10 @@ class CalDavSyncEngineTest {
         )
 
         // Sync log inserts succeed by default
-        coEvery { syncLogsDao.insert(any()) } returns 1L
+
+        // The engine's one-time components probe lists the collection; an empty answer
+        // leaves the calendar untouched and counts as probed.
+        coEvery { client.listCalendars(any()) } returns CalDavResult.success(emptyList())
     }
 
     @After
@@ -328,6 +334,68 @@ class CalDavSyncEngineTest {
 
         // No push for a read-only calendar
         coVerify(exactly = 0) { pushStrategy.pushForCalendar(any(), client) }
+        // No VTODO support, so no task pull either
+        coVerify(exactly = 0) { pullStrategy.pullTasks(any(), any(), client, any(), any()) }
+    }
+
+    @Test
+    fun `syncAccount read-only calendar pulls tasks when VTODO-capable`() = runTest {
+        val vtodoReadOnly = readOnlyCalendar.copy(components = Calendar.COMPONENTS_VEVENT_VTODO)
+
+        coEvery { calendarRepository.getCalendarsForAccountOnce(testAccount.id) } returns listOf(vtodoReadOnly)
+        coEvery { pullStrategy.pull(vtodoReadOnly, false, any(), client, any()) } returns PullResult.Success(
+            eventsAdded = 5,
+            eventsUpdated = 0,
+            eventsDeleted = 0,
+            newSyncToken = null,
+            newCtag = null
+        )
+        coEvery {
+            pullStrategy.pullTasks(vtodoReadOnly, any(), client, any(), emptySet())
+        } returns TaskPullResult(added = 2, updated = 1, deleted = 0)
+
+        val result = syncEngine.syncAccount(testAccount, client = client)
+
+        assert(result is SyncResult.Success)
+        val success = result as SyncResult.Success
+        assert(success.eventsPulledAdded == 7) // 5 events + 2 tasks
+        assert(success.eventsPulledUpdated == 1) // the task update folds into the totals
+        coVerify(exactly = 1) { pullStrategy.pullTasks(vtodoReadOnly, any(), client, any(), emptySet()) }
+        coVerify(exactly = 0) { pushStrategy.pushForCalendar(any(), client) }
+    }
+
+    @Test
+    fun `syncCalendar re-probes migration-seeded components and persists VTODO support once`() = runTest {
+        val discovered = CalDavCalendar(
+            href = "123/calendar/",
+            url = testCalendar.caldavUrl,
+            displayName = testCalendar.displayName,
+            color = null,
+            ctag = null,
+            supportedComponents = setOf("VEVENT", "VTODO")
+        )
+        val refreshed = testCalendar.copy(components = Calendar.COMPONENTS_VEVENT_VTODO)
+
+        coEvery { client.listCalendars(testCalendar.caldavUrl) } returns CalDavResult.success(listOf(discovered))
+        coEvery { calendarRepository.updateCalendar(any()) } just Runs
+        coEvery { pushStrategy.pushForCalendar(any(), client) } returns PushResult.NoPendingOperations
+        coEvery { taskPushStrategy.pushForCalendar(refreshed, client) } returns
+            TaskPushResult(0, 0, 0, 0, emptySet(), emptyList())
+        coEvery { pullStrategy.pull(any(), false, any(), client, any()) } returns PullResult.NoChanges
+        coEvery { pullStrategy.pullTasks(refreshed, any(), client, any(), emptySet()) } returns
+            TaskPullResult(1, 0, 0)
+
+        val first = syncEngine.syncCalendar(testCalendar, client = client)
+        val second = syncEngine.syncCalendar(testCalendar, client = client)
+
+        assert(first is SyncResult.Success)
+        assert(second is SyncResult.Success)
+
+        // The refreshed components are persisted and enable the task sync
+        coVerify(exactly = 1) { calendarRepository.updateCalendar(refreshed) }
+        coVerify(exactly = 1) { pullStrategy.pullTasks(refreshed, any(), client, any(), emptySet()) }
+        // The probe answered, so it never repeats — even on a fresh sync of the same calendar
+        coVerify(exactly = 1) { client.listCalendars(testCalendar.caldavUrl) }
     }
 
     @Test

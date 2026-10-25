@@ -903,6 +903,7 @@ fun EventFormSheet(
         )
     ) {
         Surface(modifier = Modifier.fillMaxSize()) {
+        SyncDialogSystemBarAppearance()
         EventFormContent(
             modifier = Modifier
                 .fillMaxSize()

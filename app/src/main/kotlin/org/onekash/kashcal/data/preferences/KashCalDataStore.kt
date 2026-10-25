@@ -538,10 +538,23 @@ class KashCalDataStore(
         get() = getOptionalPreference(PreferencesKeys.VIEW_ORDER)
             .map { raw -> parseViewOrder(raw) }
 
-    /** The valid view keys hidden from the view picker and drawer; invalid keys are dropped. */
+    /**
+     * The valid view keys hidden from the view picker and drawer; invalid keys are dropped.
+     * Self-heals the all-hidden case: a hidden set covering every valid view (e.g. a restored
+     * backup) would leave zero visible views — no view could ever be re-shown and the pickers
+     * would render empty — so the first [VALID_VIEW_KEYS] key is emitted visible again. The
+     * repair is emitted rather than persisted: a write here would run on every collection and
+     * race [setVisibleViews]; the next commit through it stores the corrected set.
+     */
     val hiddenViews: Flow<Set<String>>
         get() = getPreference(PreferencesKeys.VIEW_HIDDEN, emptySet<String>())
-            .map { hidden -> hidden.filterTo(mutableSetOf()) { it in VALID_VIEWS } }
+            .map { hidden ->
+                val validHidden = hidden.filterTo(mutableSetOf()) { it in VALID_VIEWS }
+                if (validHidden.size >= VALID_VIEWS.size) {
+                    validHidden -= VALID_VIEW_KEYS.first()
+                }
+                validHidden
+            }
 
     /**
      * Commits the Views settings: [orderedVisible] is the visible views in display order.
